@@ -28,6 +28,7 @@ def init_db():
               content TEXT NOT NULL,line_message_id TEXT,quoted_message_id TEXT,
               created_at TIMESTAMPTZ DEFAULT NOW())""")
             # Safe migrations from older versions
+            c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS event_id TEXT")
             c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS line_message_id TEXT")
             c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS quoted_message_id TEXT")
             c.execute("CREATE INDEX IF NOT EXISTS msg_conv ON messages(conversation_id,created_at DESC)")
