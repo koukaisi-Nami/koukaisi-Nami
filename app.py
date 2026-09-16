@@ -45,14 +45,63 @@ def webhook():
                 text = message.get("text", "")
                 reply_token = event.get("replyToken")
 
-                reply_message(
-                    reply_token,
-                    f"航海士ナミです🧭\n\n「{text}」\n了解しました！"
-                )
+                ai_reply = ask_nami(text)
+
+reply_message(
+    reply_token,
+    ai_reply
+)
 
     return "OK"
 
+def ask_nami(text):
+    if not OPENAI_API_KEY:
+        return "OpenAI APIキーが設定されていません。"
 
+    url = "https://api.openai.com/v1/responses"
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "gpt-5.6-luna",
+        "instructions": """
+あなたは「航海士ナミ」というAIアシスタントです。
+LINE上でユーザーと自然に会話してください。
+
+・日本語で話す
+・親しみやすく、分かりやすく答える
+・基本は簡潔に答える
+・必要な場合は詳しく説明する
+・分からないことを適当に断定しない
+""",
+        "input": text
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+
+        data = response.json()
+
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        return content.get("text", "")
+
+        return "うまく返事を作れませんでした！"
+
+    except Exception as e:
+        print("OpenAI error:", e, flush=True)
+        return "ごめん、今ちょっと考えられなかった！"
 def reply_message(reply_token, text):
     if not CHANNEL_ACCESS_TOKEN:
         return
