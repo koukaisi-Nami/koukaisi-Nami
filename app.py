@@ -1,599 +1,333 @@
-import os
-import base64
-import hashlib
-import hmac
-import json
-import re
-import requests
-import psycopg
-
+import os, base64, hashlib, hmac, json, re, requests, psycopg
 from flask import Flask, request, abort
 
 app = Flask(__name__)
 
-CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
-CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_URL = "https://api.openai.com/v1/responses"
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 
-
-def get_db():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set")
+# ---------- Database ----------
+def db():
     return psycopg.connect(DATABASE_URL)
-
 
 def init_db():
     if not DATABASE_URL:
-        print("DATABASE_URL is not set", flush=True)
-        return
+        print("DATABASE_URL missing", flush=True); return
+    with db() as conn:
+        with conn.cursor() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS messages(
+              id BIGSERIAL PRIMARY KEY, event_id TEXT UNIQUE,
+              conversation_id TEXT NOT NULL, user_id TEXT, user_name TEXT,
+              role TEXT NOT NULL, message_type TEXT DEFAULT 'text',
+              content TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("CREATE INDEX IF NOT EXISTS msg_conv_idx ON messages(conversation_id,created_at DESC)")
+            c.execute("""CREATE TABLE IF NOT EXISTS memories(
+              id BIGSERIAL PRIMARY KEY, scope TEXT NOT NULL, scope_id TEXT NOT NULL,
+              category TEXT DEFAULT 'general', subject TEXT DEFAULT '',
+              content TEXT NOT NULL, created_by TEXT,
+              created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("CREATE INDEX IF NOT EXISTS mem_scope_idx ON memories(scope,scope_id,updated_at DESC)")
+            c.execute("""CREATE TABLE IF NOT EXISTS skills(
+              id BIGSERIAL PRIMARY KEY, scope TEXT NOT NULL DEFAULT 'company',
+              scope_id TEXT NOT NULL DEFAULT 'company', name TEXT NOT NULL,
+              instructions TEXT NOT NULL, created_by TEXT,
+              created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("CREATE INDEX IF NOT EXISTS skill_idx ON skills(scope,scope_id,updated_at DESC)")
+        conn.commit()
 
+def save_message(event_id,cid,uid,name,role,content,mtype="text"):
+    if not DATABASE_URL or not content: return
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        id BIGSERIAL PRIMARY KEY,
-                        conversation_id TEXT NOT NULL,
-                        user_id TEXT,
-                        user_name TEXT,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        created_at TIMESTAMPTZ DEFAULT NOW()
-                    )
-                """)
-
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_messages_conversation
-                    ON messages(conversation_id, created_at DESC)
-                """)
-
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS memories (
-                        id BIGSERIAL PRIMARY KEY,
-                        user_id TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        created_at TIMESTAMPTZ DEFAULT NOW()
-                    )
-                """)
-
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_memories_user
-                    ON memories(user_id, created_at DESC)
-                """)
-
+        with db() as conn:
+            with conn.cursor() as c:
+                c.execute("""INSERT INTO messages(event_id,conversation_id,user_id,user_name,role,message_type,content)
+                  VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(event_id) DO NOTHING""",
+                  (event_id,cid,uid,name,role,mtype,content))
             conn.commit()
+    except Exception as e: print("save_message",repr(e),flush=True)
 
-        print("Database initialized", flush=True)
-
-    except Exception as e:
-        print("Database initialization error:", repr(e), flush=True)
-
-
-def save_message(conversation_id, user_id, user_name, role, content):
-    if not DATABASE_URL:
-        return
-
+def recent(cid,n=60):
+    if not DATABASE_URL: return []
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO messages
-                    (conversation_id, user_id, user_name, role, content)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (conversation_id, user_id, user_name, role, content)
-                )
+        with db() as conn:
+            with conn.cursor() as c:
+                c.execute("""SELECT role,user_name,content FROM messages WHERE conversation_id=%s
+                             ORDER BY created_at DESC LIMIT %s""",(cid,n))
+                rows=c.fetchall()
+        return list(reversed(rows))
+    except Exception as e: print("recent",repr(e),flush=True); return []
+
+def add_memory(scope,scope_id,category,subject,content,uid):
+    if not DATABASE_URL or not scope_id or not content.strip(): return False
+    try:
+        with db() as conn:
+            with conn.cursor() as c:
+                c.execute("""INSERT INTO memories(scope,scope_id,category,subject,content,created_by)
+                             VALUES(%s,%s,%s,%s,%s,%s)""",
+                          (scope,scope_id,category,subject,content.strip(),uid))
             conn.commit()
-    except Exception as e:
-        print("save_message error:", repr(e), flush=True)
-
-
-def get_recent_messages(conversation_id, limit=40):
-    if not DATABASE_URL:
-        return []
-
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT role, user_name, content
-                    FROM messages
-                    WHERE conversation_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (conversation_id, limit)
-                )
-                rows = cur.fetchall()
-
-        rows.reverse()
-        return rows
-
-    except Exception as e:
-        print("get_recent_messages error:", repr(e), flush=True)
-        return []
-
-
-def save_memory(user_id, content):
-    if not DATABASE_URL or not user_id:
-        return False
-
-    content = content.strip()
-    if not content:
-        return False
-
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM memories
-                    WHERE user_id = %s
-                    AND LOWER(content) = LOWER(%s)
-                    LIMIT 1
-                    """,
-                    (user_id, content)
-                )
-
-                if cur.fetchone():
-                    return True
-
-                cur.execute(
-                    """
-                    INSERT INTO memories (user_id, content)
-                    VALUES (%s, %s)
-                    """,
-                    (user_id, content)
-                )
-            conn.commit()
-
         return True
+    except Exception as e: print("memory",repr(e),flush=True); return False
 
-    except Exception as e:
-        print("save_memory error:", repr(e), flush=True)
-        return False
-
-
-def get_memories(user_id, limit=50):
-    if not DATABASE_URL or not user_id:
-        return []
-
+def memories(uid,cid,n=100):
+    if not DATABASE_URL:return []
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT content
-                    FROM memories
-                    WHERE user_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                    """,
-                    (user_id, limit)
-                )
-                rows = cur.fetchall()
+        with db() as conn:
+            with conn.cursor() as c:
+                c.execute("""SELECT scope,category,subject,content FROM memories
+                  WHERE (scope='user' AND scope_id=%s)
+                     OR (scope='conversation' AND scope_id=%s)
+                     OR (scope='company' AND scope_id='company')
+                  ORDER BY updated_at DESC LIMIT %s""",(uid,cid,n))
+                return c.fetchall()
+    except Exception as e: print("memories",repr(e),flush=True); return []
 
-        return [row[0] for row in rows]
+def forget(uid,cid,keyword):
+    if not DATABASE_URL:return 0
+    with db() as conn:
+        with conn.cursor() as c:
+            c.execute("""DELETE FROM memories WHERE
+              ((scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s))
+              AND (content ILIKE %s OR subject ILIKE %s)""",
+              (uid,cid,f"%{keyword}%",f"%{keyword}%"))
+            n=c.rowcount
+        conn.commit()
+    return n
 
-    except Exception as e:
-        print("get_memories error:", repr(e), flush=True)
-        return []
-
-
-def delete_matching_memory(user_id, keyword):
-    if not DATABASE_URL or not user_id:
-        return 0
-
-    keyword = keyword.strip()
-    if not keyword:
-        return 0
-
+def add_skill(name,instructions,uid,scope="company",scope_id="company"):
+    if not DATABASE_URL or not instructions.strip():return False
     try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    DELETE FROM memories
-                    WHERE user_id = %s
-                    AND content ILIKE %s
-                    """,
-                    (user_id, f"%{keyword}%")
-                )
-                deleted = cur.rowcount
+        with db() as conn:
+            with conn.cursor() as c:
+                c.execute("""INSERT INTO skills(scope,scope_id,name,instructions,created_by)
+                             VALUES(%s,%s,%s,%s,%s)""",(scope,scope_id,name[:120],instructions.strip(),uid))
             conn.commit()
+        return True
+    except Exception as e: print("skill",repr(e),flush=True); return False
 
-        return deleted
-
-    except Exception as e:
-        print("delete memory error:", repr(e), flush=True)
-        return 0
-
-
-def verify_signature(body, signature):
-    if not CHANNEL_SECRET:
-        return False
-
-    digest = hmac.new(
-        CHANNEL_SECRET.encode("utf-8"),
-        body,
-        hashlib.sha256
-    ).digest()
-
-    expected = base64.b64encode(digest).decode("utf-8")
-    return hmac.compare_digest(expected, signature or "")
-
-
-def get_conversation_id(event):
-    source = event.get("source", {})
-    source_type = source.get("type")
-
-    if source_type == "group":
-        return "group:" + source.get("groupId", "unknown")
-
-    if source_type == "room":
-        return "room:" + source.get("roomId", "unknown")
-
-    return "user:" + source.get("userId", "unknown")
-
-
-def get_user_id(event):
-    return event.get("source", {}).get("userId", "unknown")
-
-
-def get_user_name(event):
-    source = event.get("source", {})
-    user_id = source.get("userId")
-
-    if not user_id or not CHANNEL_ACCESS_TOKEN:
-        return "ユーザー"
-
-    source_type = source.get("type")
-
-    if source_type == "group":
-        group_id = source.get("groupId")
-        if not group_id:
-            return "ユーザー"
-        url = f"https://api.line.me/v2/bot/group/{group_id}/member/{user_id}"
-
-    elif source_type == "room":
-        room_id = source.get("roomId")
-        if not room_id:
-            return "ユーザー"
-        url = f"https://api.line.me/v2/bot/room/{room_id}/member/{user_id}"
-
-    else:
-        url = f"https://api.line.me/v2/bot/profile/{user_id}"
-
-    headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
-
+def skills(cid,n=80):
+    if not DATABASE_URL:return []
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.ok:
-            return response.json().get("displayName", "ユーザー")
-    except Exception as e:
-        print("profile error:", repr(e), flush=True)
+        with db() as conn:
+            with conn.cursor() as c:
+                c.execute("""SELECT name,instructions FROM skills
+                  WHERE (scope='company' AND scope_id='company')
+                     OR (scope='conversation' AND scope_id=%s)
+                  ORDER BY updated_at DESC LIMIT %s""",(cid,n))
+                return c.fetchall()
+    except Exception as e: print("skills",repr(e),flush=True); return []
 
+# ---------- LINE ----------
+def verify(body,sig):
+    digest=hmac.new(LINE_CHANNEL_SECRET.encode(),body,hashlib.sha256).digest()
+    return hmac.compare_digest(base64.b64encode(digest).decode(),sig or "")
+
+def ids(event):
+    s=event.get("source",{})
+    uid=s.get("userId","unknown")
+    if s.get("type")=="group": cid="group:"+s.get("groupId","unknown")
+    elif s.get("type")=="room": cid="room:"+s.get("roomId","unknown")
+    else: cid="user:"+uid
+    return cid,uid
+
+def is_group(event): return event.get("source",{}).get("type") in ("group","room")
+
+def profile_name(event):
+    s=event.get("source",{}); uid=s.get("userId")
+    if not uid:return "ユーザー"
+    try:
+        h={"Authorization":f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+        if s.get("type")=="group":
+            u=f"https://api.line.me/v2/bot/group/{s['groupId']}/member/{uid}"
+        elif s.get("type")=="room":
+            u=f"https://api.line.me/v2/bot/room/{s['roomId']}/member/{uid}"
+        else:u=f"https://api.line.me/v2/bot/profile/{uid}"
+        r=requests.get(u,headers=h,timeout=10)
+        if r.ok:return r.json().get("displayName","ユーザー")
+    except Exception as e:print("profile",repr(e),flush=True)
     return "ユーザー"
 
+def called(msg):
+    text=msg.get("text","")
+    if re.search(r"(ナミ|なみ|nami)",text,re.I):return True
+    for m in msg.get("mention",{}).get("mentionees",[]):
+        if m.get("isSelf") is True:return True
+    return False
 
-def reply_message(reply_token, text):
-    if not CHANNEL_ACCESS_TOKEN or not reply_token:
-        return
-
-    text = str(text or "").strip()
-    if not text:
-        text = "うまく返事を作れなかった！"
-
-    text = text[:4900]
-
-    url = "https://api.line.me/v2/bot/message/reply"
-    headers = {
-        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "replyToken": reply_token,
-        "messages": [{"type": "text", "text": text}]
-    }
-
+def reply(token,text):
+    if not token:return
+    text=(text or "うまく回答を作れなかった！").strip()
+    # LINE text limit safety; split into <= 4900 chars, max 5
+    chunks=[text[i:i+4900] for i in range(0,len(text),4900)][:5] or ["回答なし"]
+    payload={"replyToken":token,"messages":[{"type":"text","text":x} for x in chunks]}
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        print("LINE reply:", response.status_code, response.text, flush=True)
-    except Exception as e:
-        print("LINE reply error:", repr(e), flush=True)
+        r=requests.post("https://api.line.me/v2/bot/message/reply",
+          headers={"Authorization":f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}","Content-Type":"application/json"},
+          json=payload,timeout=30)
+        print("LINE",r.status_code,r.text,flush=True)
+    except Exception as e:print("reply",repr(e),flush=True)
 
+def get_content(mid):
+    r=requests.get(f"https://api-data.line.me/v2/bot/message/{mid}/content",
+      headers={"Authorization":f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},timeout=40)
+    if r.ok:return r.content,r.headers.get("Content-Type","image/jpeg")
+    print("content",r.status_code,r.text,flush=True); return None,None
 
-def extract_memory_command(text):
-    patterns = [
-        r"(.+?)って覚えて(?:おいて)?[！!。.]?$",
-        r"(.+?)を覚えて(?:おいて)?[！!。.]?$",
-        r"覚えて(?:おいて)?[：:]\s*(.+)$",
+# ---------- Teach / remember ----------
+def teaching(text):
+    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",text.strip(),flags=re.I)
+    patterns=[
+      r"(.{1,40}?)(?:の作り方|のやり方|のルール)(?:は|を)?[：:、,\s]*(.+)",
+      r"(?:学習して|今後はこれで|このやり方を覚えて)[：:、,\s]*(.+)"
     ]
+    m=re.search(patterns[0],t,re.S)
+    if m and len(m.group(2).strip())>=4:return m.group(1)+"の作り方",m.group(2).strip()
+    m=re.search(patterns[1],t,re.S)
+    if m and len(m.group(1).strip())>=4:return "業務ルール",m.group(1).strip()
+    return None,None
 
-    for pattern in patterns:
-        match = re.search(pattern, text.strip())
-        if match:
-            memory = match.group(1).strip()
-            memory = re.sub(r"^(ナミ|なみ)[、,\s]*", "", memory).strip()
-            if memory:
-                return memory
-
+def remember_cmd(text):
+    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",text.strip(),flags=re.I)
+    for p in [r"(.+?)って覚えて(?:おいて)?[！!。.]?$",r"(.+?)を覚えて(?:おいて)?[！!。.]?$",
+              r"覚えて(?:おいて)?[：:]\s*(.+)$"]:
+        m=re.search(p,t,re.S)
+        if m:return m.group(1).strip()
     return None
 
-
-def extract_forget_command(text):
-    patterns = [
-        r"(.+?)を忘れて(?:ください)?[！!。.]?$",
-        r"(.+?)って忘れて(?:ください)?[！!。.]?$",
-        r"忘れて[：:]\s*(.+)$",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text.strip())
-        if match:
-            keyword = match.group(1).strip()
-            keyword = re.sub(r"^(ナミ|なみ)[、,\s]*", "", keyword).strip()
-            if keyword:
-                return keyword
-
+def forget_cmd(text):
+    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",text.strip(),flags=re.I)
+    for p in [r"(.+?)を忘れて",r"(.+?)って忘れて",r"忘れて[：:]\s*(.+)"]:
+        m=re.search(p,t,re.S)
+        if m:return m.group(1).strip()
     return None
 
+# ---------- AI ----------
+SYSTEM="""あなたはLINE上のAI「航海士ナミ」。Steer Shipの優秀な不動産賃貸仲介営業マン兼営業事務として振る舞う。
+日本の賃貸仲介実務に強く、ヒアリング、物件提案、募集図面読解、初期費用、申込、入居審査、保証会社、必要書類、
+重説・契約・鍵渡し・入居までの一般的な流れ、顧客フォロー、営業文面、請求・見積の整理を支援する。
+法令・税務・審査基準・物件募集状況など変動する事項は断定せず、必要ならWeb検索で最新情報を確認する。
 
-def is_group_event(event):
-    return event.get("source", {}).get("type") in ("group", "room")
-
-
-def is_nami_called(text):
-    normalized = text.lower().strip()
-    return any(word in normalized for word in ["ナミ", "なみ", "nami"])
-
-
-def remove_nami_call(text):
-    cleaned = re.sub(
-        r"(ナミ|なみ|nami)[、,！!？?\s]*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    ).strip()
-
-    return cleaned or text
-
-
-def build_history(conversation_id):
-    rows = get_recent_messages(conversation_id, limit=40)
-
-    if not rows:
-        return "まだ会話履歴はありません。"
-
-    lines = []
-    for role, user_name, content in rows:
-        if role == "assistant":
-            lines.append(f"航海士ナミ: {content}")
-        else:
-            lines.append(f"{user_name or 'ユーザー'}: {content}")
-
-    return "\n".join(lines)
-
-
-def build_memory_text(user_id):
-    memories = get_memories(user_id, limit=50)
-
-    if not memories:
-        return "保存された長期記憶はまだありません。"
-
-    return "\n".join(f"- {memory}" for memory in memories)
-
-
-def ask_nami(text, conversation_id, user_id, user_name):
-    if not OPENAI_API_KEY:
-        return "OpenAI APIキーが設定されていません。"
-
-    history = build_history(conversation_id)
-    memories = build_memory_text(user_id)
-
-    instructions = """
-あなたはLINE上で働くAIアシスタント「航海士ナミ」です。
-
-役割:
-・優秀な営業アシスタント
-・営業マンの右腕
-・会話内容を整理する
-・文章を作成する
-・過去の会話と記憶を踏まえて回答する
-
-会話スタイル:
-・日本語
-・親しみやすい
-・自然なLINE口調
-・基本は簡潔
-・必要な場合だけ詳しく説明する
-・分からないことを適当に断定しない
-・過去の会話を知っている場合は自然に活用する
-・毎回「記憶しています」など不自然な説明をしない
-
-重要:
-以下にはこのユーザーの長期記憶と、このトークルームの最近の会話履歴が含まれます。
-回答に必要な場合のみ利用してください。
-同じグループ内の他人の発言と、現在話しているユーザー本人の長期記憶を混同しないでください。
+絶対ルール:
+- 会話履歴・ユーザー記憶・会社知識・業務スキルを区別して利用する。別人や別グループを混同しない。
+- グループでは全メッセージが履歴として保存される前提だが、ナミ自身は呼ばれた時だけ回答する。
+- 保存された会社独自ルールは一般論より優先。ただし違法・危険・明らかな誤りはその旨を示す。
+- 最新の天気、ニュース、会社、店舗、相場、物件など現在性が必要ならweb_searchを使う。
+- 図面・写真は丁寧に読む。読めない文字や記載のない金額を捏造しない。「要確認」と明記する。
+- 見積は賃料、管理費、敷金、礼金、前家賃、日割り、保証料、保険、鍵交換、仲介手数料、その他を分ける。
+- 月額/初回、税込/税別、必須/任意を混同しない。根拠がない金額は計算しない。
+- 請求書は宛名、発行者、発行日、請求項目、数量、単価、税、合計、期日、振込先等を保存ルールに従い整理。不明は要確認。
+- 顧客条件（予算、エリア、駅距離、間取り、入居日、ペット、法人/個人、審査事情等）を会話文脈から正確に扱う。
+- 宅建業法など法的な重要事項は一般的説明と個別判断を分け、必要に応じ専門家/管理会社等への確認を促す。
+- 簡潔なLINE口調。業務成果物は見やすく整理する。
 """
 
-    prompt = f"""
-【現在話している人】
-{user_name}
+def context(uid,cid):
+    h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x}" for r,n,x in recent(cid))
+    m="\n".join(f"- [{s}/{cat}/{sub}] {x}" for s,cat,sub,x in memories(uid,cid))
+    sk="\n".join(f"- 【{n}】{x}" for n,x in skills(cid))
+    return f"【このトークの履歴】\n{h or 'なし'}\n\n【参照可能な長期記憶】\n{m or 'なし'}\n\n【会社から教わった業務ルール】\n{sk or 'なし'}"
 
-【この人の長期記憶】
-{memories}
-
-【このトークルームの最近の会話】
-{history}
-
-【今回のメッセージ】
-{text}
-
-上記を踏まえて自然に返答してください。
-"""
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
+def openai_response(text,uid,cid,image=None,mime=None):
+    if not OPENAI_API_KEY:return "OPENAI_API_KEYが設定されていません。"
+    content=[{"type":"input_text","text":context(uid,cid)+"\n\n【今回の依頼】\n"+text}]
+    if image:
+        b64=base64.b64encode(image).decode()
+        content.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{b64}","detail":"high"})
+    payload={
+      "model":OPENAI_MODEL,
+      "instructions":SYSTEM,
+      "input":[{"role":"user","content":content}],
+      "tools":[{"type":"web_search"}],
+      "tool_choice":"auto"
     }
-
-    payload = {
-        "model": OPENAI_MODEL,
-        "instructions": instructions,
-        "input": prompt
-    }
-
     try:
-        response = requests.post(
-            OPENAI_URL,
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-
-        if not response.ok:
-            print("OpenAI HTTP error:", response.status_code, response.text, flush=True)
-            return "ごめん、今ちょっと考えられなかった！"
-
-        data = response.json()
-
-        output_text = data.get("output_text")
-        if output_text:
-            return output_text.strip()
-
-        for item in data.get("output", []):
-            if item.get("type") != "message":
-                continue
-
-            for content in item.get("content", []):
-                if content.get("type") == "output_text":
-                    answer = content.get("text", "")
-                    if answer:
-                        return answer.strip()
-
-        return "うまく返事を作れなかった！"
-
+        r=requests.post(OPENAI_URL,headers={"Authorization":f"Bearer {OPENAI_API_KEY}",
+          "Content-Type":"application/json"},json=payload,timeout=120)
+        if not r.ok:
+            print("OPENAI",r.status_code,r.text,flush=True)
+            return f"AI側でエラーが出たよ（{r.status_code}）。Renderのログを確認してね。"
+        d=r.json()
+        if d.get("output_text"):return d["output_text"].strip()
+        out=[]
+        for item in d.get("output",[]):
+            if item.get("type")=="message":
+                for z in item.get("content",[]):
+                    if z.get("type")=="output_text" and z.get("text"):out.append(z["text"])
+        return "\n".join(out).strip() or "回答を作れなかったよ。"
     except Exception as e:
-        print("OpenAI error:", repr(e), flush=True)
-        return "ごめん、今ちょっと考えられなかった！"
+        print("openai",repr(e),flush=True); return "AIへの接続でエラーが出たよ。"
 
+def analyze_image(image,mime,uid,cid):
+    prompt="""この画像を不動産賃貸営業の視点で読み取ってください。
+募集図面なら、物件名/号室/所在地/交通/間取り/面積/賃料/管理費/敷金/礼金/保証金/契約期間/
+保証会社/火災保険/鍵交換/その他初期費用/月額費用/入居可能日/設備/特約/広告料など、読める項目を抽出。
+見積作成に必要な情報を整理し、不鮮明・記載なしは「要確認」。数字を推測しない。
+会社の保存済み見積ルールがある場合のみ、それを適用して見積案も作る。"""
+    return openai_response(prompt,uid,cid,image,mime)
 
-@app.route("/", methods=["GET"])
-def home():
-    return "航海士ナミ、航海中🏴‍☠️"
+# ---------- Webhook ----------
+@app.get("/")
+def health(): return "航海士ナミ OK",200
 
-
-@app.route("/health", methods=["GET"])
-def health():
-    return {
-        "status": "ok",
-        "database": bool(DATABASE_URL),
-        "openai": bool(OPENAI_API_KEY),
-        "line": bool(CHANNEL_SECRET and CHANNEL_ACCESS_TOKEN)
-    }
-
-
-@app.route("/webhook", methods=["POST"])
+@app.post("/webhook")
 def webhook():
-    raw_body = request.get_data()
-    signature = request.headers.get("X-Line-Signature", "")
+    raw=request.get_data()
+    if not verify(raw,request.headers.get("X-Line-Signature","")): abort(400)
+    data=request.get_json(silent=True) or {}
+    for e in data.get("events",[]):
+        if e.get("type")!="message":continue
+        msg=e.get("message",{}); typ=msg.get("type")
+        if typ not in ("text","image"):continue
+        cid,uid=ids(e); name=profile_name(e)
+        event_id=e.get("webhookEventId") or msg.get("id")
+        token=e.get("replyToken")
 
-    if not verify_signature(raw_body, signature):
-        abort(400)
+        if typ=="text":
+            text=msg.get("text","")
+            # Always store group and 1:1 text before deciding whether to speak.
+            save_message(event_id,cid,uid,name,"user",text,"text")
 
-    try:
-        data = json.loads(raw_body.decode("utf-8"))
-    except Exception:
-        abort(400)
+            # In groups: silence unless called/mentioned. Still remembered in that group's history.
+            if is_group(e) and not called(msg):continue
 
-    for event in data.get("events", []):
-        if event.get("type") != "message":
-            continue
+            skname,inst=teaching(text)
+            if skname and inst:
+                add_skill(skname,inst,uid)
+                ans=f"学習したよ🧭\n【{skname}】\n{inst}\n今後の業務でこのルールを参照するね。"
+            else:
+                f=forget_cmd(text)
+                if f:
+                    n=forget(uid,cid,f); ans=f"「{f}」に関する記憶を{n}件削除したよ。"
+                else:
+                    mem=remember_cmd(text)
+                    if mem:
+                        # Explicit remember defaults to user memory. Company procedures should use learning command.
+                        add_memory("user",uid,"general","",mem,uid)
+                        ans=f"覚えたよ🧭\n「{mem}」"
+                    else:
+                        ans=openai_response(text,uid,cid)
+            save_message("assistant:"+str(event_id),cid,"bot","航海士ナミ","assistant",ans)
+            reply(token,ans)
 
-        message = event.get("message", {})
-        if message.get("type") != "text":
-            continue
+        elif typ=="image":
+            # Image is saved as a durable textual analysis; LINE content itself can expire.
+            image,mime=get_content(msg.get("id"))
+            if not image:continue
+            summary=analyze_image(image,mime,uid,cid)
+            save_message(event_id,cid,uid,name,"user","[画像]\n"+summary,"image")
+            # 1:1 replies immediately. In groups, image alone cannot reliably contain a bot mention,
+            # so store silently; user can follow with "ナミ、この図面見積もり作って".
+            if not is_group(e):
+                save_message("assistant:"+str(event_id),cid,"bot","航海士ナミ","assistant",summary)
+                reply(token,summary)
+    return "OK",200
 
-        text = message.get("text", "").strip()
-        if not text:
-            continue
+try:init_db()
+except Exception as e:print("init",repr(e),flush=True)
 
-        reply_token = event.get("replyToken")
-        conversation_id = get_conversation_id(event)
-        user_id = get_user_id(event)
-        user_name = get_user_name(event)
-
-        # Save every text message, even when Nami stays silent.
-        save_message(conversation_id, user_id, user_name, "user", text)
-
-        memory = extract_memory_command(text)
-
-        if memory:
-            success = save_memory(user_id, memory)
-            reply = (
-                f"覚えておくね！🧭\n「{memory}」"
-                if success
-                else "ごめん、記憶の保存に失敗した！"
-            )
-
-            save_message(conversation_id, "nami", "航海士ナミ", "assistant", reply)
-            reply_message(reply_token, reply)
-            continue
-
-        forget_keyword = extract_forget_command(text)
-
-        if forget_keyword:
-            deleted = delete_matching_memory(user_id, forget_keyword)
-
-            reply = (
-                f"「{forget_keyword}」に関する記憶を忘れたよ🧭"
-                if deleted
-                else f"「{forget_keyword}」に関する記憶は見つからなかったよ。"
-            )
-
-            save_message(conversation_id, "nami", "航海士ナミ", "assistant", reply)
-            reply_message(reply_token, reply)
-            continue
-
-        # In groups Nami listens to all text, but only answers when called.
-        if is_group_event(event):
-            if not is_nami_called(text):
-                continue
-            text_for_ai = remove_nami_call(text)
-        else:
-            text_for_ai = text
-
-        ai_reply = ask_nami(
-            text_for_ai,
-            conversation_id,
-            user_id,
-            user_name
-        )
-
-        save_message(
-            conversation_id,
-            "nami",
-            "航海士ナミ",
-            "assistant",
-            ai_reply
-        )
-
-        reply_message(reply_token, ai_reply)
-
-    return "OK"
-
-
-init_db()
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
+if __name__=="__main__":
+    app.run(host="0.0.0.0",port=int(os.getenv("PORT","10000")))
