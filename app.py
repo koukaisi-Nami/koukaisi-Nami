@@ -3,10 +3,12 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import requests
 import psycopg
 
 from flask import Flask, request, abort
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
@@ -15,6 +17,12 @@ CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+OPENAI_URL = "https://api.openai.com/v1/responses"
+
+
+# =========================================================
+# DATABASE
+# =========================================================
 
 def get_db():
     return psycopg.connect(DATABASE_URL)
@@ -27,6 +35,8 @@ def init_db():
 
     with get_db() as conn:
         with conn.cursor() as cur:
+
+            # 会話履歴
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id BIGSERIAL PRIMARY KEY,
@@ -38,25 +48,179 @@ def init_db():
                 )
             """)
 
+            # メンバー
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_conversation_id
+                CREATE TABLE IF NOT EXISTS members (
+                    user_id TEXT PRIMARY KEY,
+                    display_name TEXT,
+                    notes TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            # 長期記憶
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id BIGSERIAL PRIMARY KEY,
+                    conversation_id TEXT,
+                    user_id TEXT,
+                    category TEXT DEFAULT 'general',
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            # タスク
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id BIGSERIAL PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    creator_user_id TEXT,
+                    assignee_name TEXT,
+                    title TEXT NOT NULL,
+                    due_at TIMESTAMPTZ,
+                    status TEXT DEFAULT 'open',
+                    reminder_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
+                )
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_lookup
                 ON conversations (conversation_id, created_at)
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_memories_lookup
+                ON memories (conversation_id, user_id, created_at)
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tasks_lookup
+                ON tasks (conversation_id, status, due_at)
             """)
 
         conn.commit()
 
+    print("Database initialized", flush=True)
+
+
+# =========================================================
+# LINE IDENTIFICATION
+# =========================================================
+
+def get_source(event):
+    return event.get("source", {})
+
+
+def get_user_id(event):
+    return get_source(event).get("userId", "unknown")
+
 
 def get_conversation_id(event):
-    source = event.get("source", {})
+    source = get_source(event)
+    source_type = source.get("type")
 
-    if source.get("type") == "group":
+    if source_type == "group":
         return "group:" + source.get("groupId", "unknown")
 
-    if source.get("type") == "room":
+    if source_type == "room":
         return "room:" + source.get("roomId", "unknown")
 
     return "user:" + source.get("userId", "unknown")
 
+
+def get_line_display_name(user_id):
+    if not user_id or user_id == "unknown":
+        return None
+
+    if not CHANNEL_ACCESS_TOKEN:
+        return None
+
+    url = f"https://api.line.me/v2/bot/profile/{user_id}"
+
+    headers = {
+        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
+    }
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            return response.json().get("displayName")
+
+    except Exception as e:
+        print("LINE profile error:", e, flush=True)
+
+    return None
+
+
+def upsert_member(user_id, display_name=None):
+    if not DATABASE_URL or not user_id or user_id == "unknown":
+        return
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO members (user_id, display_name)
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        display_name = COALESCE(
+                            EXCLUDED.display_name,
+                            members.display_name
+                        ),
+                        updated_at = NOW()
+                    """,
+                    (user_id, display_name)
+                )
+
+            conn.commit()
+
+    except Exception as e:
+        print("Member save error:", e, flush=True)
+
+
+def get_member(user_id):
+    if not DATABASE_URL:
+        return None
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT display_name, notes
+                    FROM members
+                    WHERE user_id = %s
+                    """,
+                    (user_id,)
+                )
+
+                row = cur.fetchone()
+
+        if row:
+            return {
+                "display_name": row[0],
+                "notes": row[1]
+            }
+
+    except Exception as e:
+        print("Member lookup error:", e, flush=True)
+
+    return None
+
+
+# =========================================================
+# CONVERSATION MEMORY
+# =========================================================
 
 def save_message(conversation_id, user_id, role, content):
     if not DATABASE_URL:
@@ -71,15 +235,21 @@ def save_message(conversation_id, user_id, role, content):
                     (conversation_id, user_id, role, content)
                     VALUES (%s, %s, %s, %s)
                     """,
-                    (conversation_id, user_id, role, content)
+                    (
+                        conversation_id,
+                        user_id,
+                        role,
+                        content
+                    )
                 )
+
             conn.commit()
 
     except Exception as e:
-        print("DB save error:", e, flush=True)
+        print("Conversation save error:", e, flush=True)
 
 
-def get_history(conversation_id, limit=20):
+def get_history(conversation_id, limit=30):
     if not DATABASE_URL:
         return []
 
@@ -88,7 +258,7 @@ def get_history(conversation_id, limit=20):
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT role, content
+                    SELECT role, content, user_id
                     FROM conversations
                     WHERE conversation_id = %s
                     ORDER BY created_at DESC
@@ -103,218 +273,115 @@ def get_history(conversation_id, limit=20):
 
         return [
             {
-                "role": role,
-                "content": content
+                "role": row[0],
+                "content": row[1],
+                "user_id": row[2]
             }
-            for role, content in rows
+            for row in rows
         ]
 
     except Exception as e:
-        print("DB history error:", e, flush=True)
+        print("History error:", e, flush=True)
         return []
 
 
-@app.route("/", methods=["GET"])
-def home():
-    return "航海士ナミ、記憶しながら航海中！🏴‍☠️"
+# =========================================================
+# LONG-TERM MEMORY
+# =========================================================
 
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    body = request.get_data(as_text=True)
-    signature = request.headers.get("X-Line-Signature", "")
-
-    if CHANNEL_SECRET:
-        hash_value = hmac.new(
-            CHANNEL_SECRET.encode("utf-8"),
-            body.encode("utf-8"),
-            hashlib.sha256
-        ).digest()
-
-        expected_signature = base64.b64encode(
-            hash_value
-        ).decode("utf-8")
-
-        if not hmac.compare_digest(
-            expected_signature,
-            signature
-        ):
-            abort(400)
-
-    data = json.loads(body)
-
-    for event in data.get("events", []):
-        if event.get("type") != "message":
-            continue
-
-        message = event.get("message", {})
-
-        if message.get("type") != "text":
-            continue
-
-        text = message.get("text", "")
-        reply_token = event.get("replyToken")
-
-        source = event.get("source", {})
-        user_id = source.get("userId", "unknown")
-        conversation_id = get_conversation_id(event)
-
-        history = get_history(conversation_id)
-
-        ai_reply = ask_nami(
-            text,
-            history
-        )
-
-        save_message(
-            conversation_id,
-            user_id,
-            "user",
-            text
-        )
-
-        save_message(
-            conversation_id,
-            None,
-            "assistant",
-            ai_reply
-        )
-
-        reply_message(
-            reply_token,
-            ai_reply
-        )
-
-    return "OK"
-
-
-def ask_nami(text, history):
-    if not OPENAI_API_KEY:
-        return "OpenAI APIキーが設定されていません。"
-
-    url = "https://api.openai.com/v1/responses"
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    conversation_text = ""
-
-    for message in history:
-        if message["role"] == "user":
-            name = "ユーザー"
-        else:
-            name = "ナミ"
-
-        conversation_text += (
-            f"{name}: {message['content']}\n"
-        )
-
-    prompt = f"""
-これまでの会話:
-{conversation_text}
-
-今回のユーザーの発言:
-{text}
-"""
-
-    payload = {
-        "model": "gpt-5.6-luna",
-        "instructions": """
-あなたは「航海士ナミ🧭」というAIアシスタントです。
-
-LINE上でユーザーと自然に会話してください。
-
-役割:
-・仕事と日常を支える有能な航海士
-・過去の会話を踏まえて話す
-・情報を整理して分かりやすく伝える
-・文章作成や相談にも対応する
-
-会話ルール:
-・日本語で話す
-・親しみやすい
-・基本は結論から簡潔に話す
-・必要なら詳しく説明する
-・知らないことを勝手に作らない
-・過去の会話と矛盾しないようにする
-""",
-        "input": prompt
-    }
+def save_memory(
+    conversation_id,
+    user_id,
+    content,
+    category="general"
+):
+    if not DATABASE_URL:
+        return False
 
     try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=30
-        )
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO memories
+                    (conversation_id, user_id, category, content)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        conversation_id,
+                        user_id,
+                        category,
+                        content
+                    )
+                )
 
-        response.raise_for_status()
-        data = response.json()
+            conn.commit()
 
-        for item in data.get("output", []):
-            if item.get("type") == "message":
-                for content in item.get("content", []):
-                    if content.get("type") == "output_text":
-                        return content.get("text", "")
-
-        return "うまく返事を作れませんでした！"
+        return True
 
     except Exception as e:
-        print("OpenAI error:", e, flush=True)
-        return "ごめん、今ちょっと考えられなかった！"
+        print("Memory save error:", e, flush=True)
+        return False
 
 
-def reply_message(reply_token, text):
-    if not CHANNEL_ACCESS_TOKEN:
-        return
+def get_memories(conversation_id, user_id, limit=50):
+    if not DATABASE_URL:
+        return []
 
-    url = "https://api.line.me/v2/bot/message/reply"
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT category, content
+                    FROM memories
+                    WHERE
+                        conversation_id = %s
+                        OR user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (
+                        conversation_id,
+                        user_id,
+                        limit
+                    )
+                )
 
-    headers = {
-        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
+                rows = cur.fetchall()
 
-    payload = {
-        "replyToken": reply_token,
-        "messages": [
+        return [
             {
-                "type": "text",
-                "text": text[:5000]
+                "category": row[0],
+                "content": row[1]
             }
+            for row in rows
         ]
-    }
 
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=10
-    )
-
-    print(
-        "LINE:",
-        response.status_code,
-        response.text,
-        flush=True
-    )
+    except Exception as e:
+        print("Memory lookup error:", e, flush=True)
+        return []
 
 
-try:
-    init_db()
-except Exception as e:
-    print("DB initialization error:", e, flush=True)
+def detect_memory_command(text):
+    patterns = [
+        r"(.+?)って覚えて",
+        r"(.+?)を覚えて",
+        r"覚えておいて[、,:：]?\s*(.+)",
+        r"記憶して[、,:：]?\s*(.+)"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if match:
+            return match.group(1).strip()
+
+    return None
 
 
-if __name__ == "__main__":
-    port = int(
-        os.environ.get("PORT", 10000)
-    )
+# =========================================================
+# TASKS
+# =========================================================
 
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+def create_task(
