@@ -74,9 +74,8 @@ def reply_message(reply_token, text):
         ]
     }
 
-　　response = requests.post(url, headers=headers, json=payload, timeout=10)
+    response = requests.post(url, headers=headers, json=payload, timeout=10)
     print(response.status_code, response.text, flush=True)
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
