@@ -15,7 +15,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 @app.route("/", methods=["GET"])
 def home():
-    return "航海士ナミ、航海中！🏴‍☠️"
+    return "航海士ナミ、航海中🏴‍☠️"
 
 
 @app.route("/webhook", methods=["POST"])
