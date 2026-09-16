@@ -24,15 +24,15 @@ def webhook():
     signature = request.headers.get("X-Line-Signature", "")
 
     if CHANNEL_SECRET:
-        digest = hmac.new(
+        hash_value = hmac.new(
             CHANNEL_SECRET.encode("utf-8"),
             body.encode("utf-8"),
             hashlib.sha256
         ).digest()
 
-        expected_signature = base64.b64encode(digest).decode("utf-8")
+        expected_signature = base64.b64encode(hash_value).decode("utf-8")
 
-        if not hmac.compare_digest(signature, expected_signature):
+        if not hmac.compare_digest(expected_signature, signature):
             abort(400)
 
     data = json.loads(body)
@@ -42,7 +42,7 @@ def webhook():
             message = event.get("message", {})
 
             if message.get("type") == "text":
-   text = message.get("text", "")
+                text = message.get("text", "")
                 reply_token = event.get("replyToken")
 
                 ai_reply = ask_nami(text)
@@ -53,7 +53,6 @@ def webhook():
                 )
 
     return "OK"
-
 
 def ask_nami(text):
     if not OPENAI_API_KEY:
