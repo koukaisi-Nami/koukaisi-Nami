@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 @app.route("/", methods=["GET"])
 def home():
