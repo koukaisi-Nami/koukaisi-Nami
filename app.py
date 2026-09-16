@@ -54,9 +54,14 @@ def init_db():
                     conversation_id TEXT,
                     user_id TEXT,
                     category TEXT DEFAULT 'general',
+                    scope TEXT DEFAULT 'personal',
                     content TEXT NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
+            """)
+            cur.execute("""
+                ALTER TABLE memories
+                ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'personal'
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -210,7 +215,13 @@ def get_history(conversation_id, limit=30):
         return []
 
 
-def save_memory(conversation_id, user_id, content, category="general"):
+def save_memory(
+    conversation_id,
+    user_id,
+    content,
+    category="general",
+    scope="personal"
+):
     if not DATABASE_URL:
         return False
 
@@ -219,9 +230,9 @@ def save_memory(conversation_id, user_id, content, category="general"):
             with conn.cursor() as cur:
                 cur.execute("""
                     INSERT INTO memories
-                    (conversation_id, user_id, category, content)
-                    VALUES (%s, %s, %s, %s)
-                """, (conversation_id, user_id, category, content))
+                    (conversation_id, user_id, category, scope, content)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (conversation_id, user_id, category, scope, content))
             conn.commit()
         return True
     except Exception as e:
@@ -237,15 +248,21 @@ def get_memories(conversation_id, user_id, limit=50):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT category, content
+                    SELECT category, scope, content
                     FROM memories
-                    WHERE conversation_id = %s OR user_id = %s
+                    WHERE
+                        (scope = 'personal' AND user_id = %s)
+                        OR (scope = 'group' AND conversation_id = %s)
+                        OR scope = 'global'
                     ORDER BY created_at DESC
                     LIMIT %s
-                """, (conversation_id, user_id, limit))
+                """, (user_id, conversation_id, limit))
                 rows = cur.fetchall()
 
-        return [{"category": category, "content": content} for category, content in rows]
+        return [
+            {"category": category, "scope": scope, "content": content}
+            for category, scope, content in rows
+        ]
     except Exception as e:
         print("Memory lookup error:", e, flush=True)
         return []
@@ -460,6 +477,29 @@ def home():
     return "航海士ナミ、航海中！🧭🏴‍☠️"
 
 
+def is_group_conversation(event):
+    return get_source(event).get("type") in ("group", "room")
+
+
+def is_nami_called(text):
+    normalized = re.sub(r"[\\s　]+", "", text).lower()
+    call_names = (
+        "ナミ",
+        "なみ",
+        "航海士ナミ",
+        "航海士なみ"
+    )
+    return any(name.lower() in normalized for name in call_names)
+
+
+def remove_nami_call(text):
+    cleaned = text
+    for name in ("航海士ナミ", "航海士なみ", "ナミ", "なみ"):
+        cleaned = cleaned.replace(name, "")
+    cleaned = cleaned.lstrip("、,。！!？?:： 　")
+    return cleaned.strip()
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     body = request.get_data(as_text=True)
@@ -489,6 +529,16 @@ def webhook():
         text = message.get("text", "").strip()
         if not text:
             continue
+
+        # In groups/rooms, Nami stays quiet unless someone explicitly calls her.
+        # Uncalled group messages are not saved to conversation history or memory.
+        if is_group_conversation(event):
+            if not is_nami_called(text):
+                continue
+
+            text = remove_nami_call(text)
+            if not text:
+                text = "呼んだ？"
 
         reply_token = event.get("replyToken")
         user_id = get_user_id(event)
