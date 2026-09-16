@@ -42,17 +42,18 @@ def webhook():
             message = event.get("message", {})
 
             if message.get("type") == "text":
-                text = message.get("text", "")
+   text = message.get("text", "")
                 reply_token = event.get("replyToken")
 
                 ai_reply = ask_nami(text)
 
-reply_message(
-    reply_token,
-    ai_reply
-)
+                reply_message(
+                    reply_token,
+                    ai_reply
+                )
 
     return "OK"
+
 
 def ask_nami(text):
     if not OPENAI_API_KEY:
