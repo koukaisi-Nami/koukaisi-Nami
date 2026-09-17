@@ -1,0 +1,25 @@
+name: Test Nami Brain
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/shared-nami-brain
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - name: Syntax check
+        run: python -m py_compile nami_brain.py self_improvement.py
+      - name: Brain and self-improvement tests
+        run: pytest -q tests/test_nami_brain.py tests/test_self_improvement.py
+      - name: Existing structured estimate regression
+        run: |
+          if [ -f tests/test_estimate_model.py ]; then pytest -q tests/test_estimate_model.py; fi
+          if [ -f tests/test_structured_estimate.py ]; then pytest -q tests/test_structured_estimate.py; fi
