@@ -10,7 +10,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: chapi-single-insurance-fix-0917
       - run: python patch_single_estimate_insurance.py
