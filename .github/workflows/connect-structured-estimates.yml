@@ -1,0 +1,29 @@
+name: Connect structured estimates
+on:
+  pull_request:
+    paths:
+      - 'structured_estimate_runtime.py'
+      - 'scripts/connect_structured_estimates.py'
+      - '.github/workflows/connect-structured-estimates.yml'
+      - 'estimate_model.py'
+      - 'estimate_document.py'
+  workflow_dispatch:
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install reportlab pymupdf
+      - name: Apply integration in CI workspace
+        run: python scripts/connect_structured_estimates.py
+      - name: Syntax
+        run: python -m py_compile app.py estimate_model.py estimate_document.py structured_estimate_runtime.py
+      - name: Existing structured tests
+        run: python -m unittest tests.test_estimate_model tests.test_estimate_renderer -v
+      - name: Verify production integration anchors
+        run: |
+          grep -q 'from structured_estimate_runtime import generate_text as structured_estimate' app.py
+          grep -q 'ESTIMATE_CACHE\[key\]=(time.time(),estimate_data)' app.py
+          grep -q 'return (marker,estimate_data,estimate_text)' app.py
