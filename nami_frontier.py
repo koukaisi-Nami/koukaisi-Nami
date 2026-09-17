@@ -19,8 +19,12 @@ DEFAULT_STRONG = "gpt-5.6"  # alias for the current GPT-5.6 Sol line
 DEFAULT_IMAGE = "gpt-image-2"
 DEFAULT_REALTIME = "gpt-realtime-2.1"
 DEFAULT_TRANSCRIBE = "gpt-transcribe"
+DEFAULT_TTS = "gpt-4o-mini-tts"
+DEFAULT_EMBEDDING = "text-embedding-3-large"
 
 _MODEL_RE = re.compile(r"^gpt-(\d+)\.(\d+)-(sol|terra|luna)$", re.I)
+_IMAGE_RE = re.compile(r"^gpt-image-(\d+)(?:\.(\d+))?$", re.I)
+_REALTIME_RE = re.compile(r"^gpt-realtime-(\d+)(?:\.(\d+))?$", re.I)
 _CACHE_LOCK = threading.Lock()
 _CACHE = {"at": 0.0, "models": ()}
 _DISCOVERY_TTL = int(os.getenv("NAMI_MODEL_DISCOVERY_TTL", "21600"))
@@ -34,6 +38,8 @@ class FrontierStack:
     image: str = DEFAULT_IMAGE
     realtime: str = DEFAULT_REALTIME
     transcribe: str = DEFAULT_TRANSCRIBE
+    tts: str = DEFAULT_TTS
+    embedding: str = DEFAULT_EMBEDDING
 
 
 def _version_tuple(model_id: str):
@@ -49,6 +55,18 @@ def _latest_lane(model_ids: Iterable[str], lane: str, fallback: str) -> str:
         parsed = _version_tuple(model_id)
         if parsed and parsed[2] == lane:
             rows.append((parsed[0], parsed[1], model_id))
+    if not rows:
+        return fallback
+    rows.sort(reverse=True)
+    return rows[0][2]
+
+
+def _latest_specialized(model_ids: Iterable[str], pattern, fallback: str) -> str:
+    rows = []
+    for model_id in model_ids or ():
+        m = pattern.match(model_id or "")
+        if m:
+            rows.append((int(m.group(1)), int(m.group(2) or 0), model_id))
     if not rows:
         return fallback
     rows.sort(reverse=True)
@@ -83,9 +101,9 @@ def _fetch_model_ids(api_key: str, http) -> tuple[str, ...]:
 def current_stack(api_key: str = "", http=None) -> FrontierStack:
     """Return current compatible frontier models.
 
-    When model discovery is enabled, newer compatible GPT Sol/Terra/Luna versions
-    visible to the account are selected automatically. Unknown naming schemes are
-    ignored so a new product name can never silently break production.
+    Newer compatible Sol/Terra/Luna, GPT-Image and GPT-Realtime versions visible
+    to the account are selected automatically. Unknown naming schemes are ignored,
+    so an unrelated new product can never silently replace production.
     """
     fast = os.getenv("NAMI_FAST_MODEL", DEFAULT_FAST)
     balanced = os.getenv("NAMI_BALANCED_MODEL", DEFAULT_BALANCED)
@@ -93,6 +111,8 @@ def current_stack(api_key: str = "", http=None) -> FrontierStack:
     image = os.getenv("NAMI_IMAGE_MODEL", DEFAULT_IMAGE)
     realtime = os.getenv("NAMI_REALTIME_MODEL", DEFAULT_REALTIME)
     transcribe = os.getenv("NAMI_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIBE)
+    tts = os.getenv("NAMI_TTS_MODEL", DEFAULT_TTS)
+    embedding = os.getenv("NAMI_EMBEDDING_MODEL", DEFAULT_EMBEDDING)
 
     discover = os.getenv("NAMI_AUTO_MODEL_DISCOVERY", "true").lower() == "true"
     if discover:
@@ -100,11 +120,12 @@ def current_stack(api_key: str = "", http=None) -> FrontierStack:
         if ids:
             fast = _latest_lane(ids, "luna", fast)
             balanced = _latest_lane(ids, "terra", balanced)
-            # Prefer the explicit latest Sol ID once a newer compatible family exists.
             sol = _latest_lane(ids, "sol", "")
             if sol:
                 strong = sol
-    return FrontierStack(fast, balanced, strong, image, realtime, transcribe)
+            image = _latest_specialized(ids, _IMAGE_RE, image)
+            realtime = _latest_specialized(ids, _REALTIME_RE, realtime)
+    return FrontierStack(fast, balanced, strong, image, realtime, transcribe, tts, embedding)
 
 
 def task_for_text(text: str = "") -> str:
@@ -146,5 +167,7 @@ def frontier_snapshot(api_key: str = "", http=None) -> dict:
         "image": s.image,
         "realtime": s.realtime,
         "transcribe": s.transcribe,
+        "tts": s.tts,
+        "embedding": s.embedding,
         "auto_discovery": os.getenv("NAMI_AUTO_MODEL_DISCOVERY", "true").lower() == "true",
     }
