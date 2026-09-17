@@ -1,0 +1,16 @@
+name: Test multi-property estimates
+on:
+  push:
+    branches: [chapi-multi-property-estimates]
+  pull_request:
+    paths: [multi_property_estimate.py, test_multi_property_estimate.py, app.py]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest
+      - run: python -m py_compile multi_property_estimate.py
+      - run: pytest -q test_multi_property_estimate.py
