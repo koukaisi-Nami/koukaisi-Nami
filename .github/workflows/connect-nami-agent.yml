@@ -1,0 +1,27 @@
+name: Connect Nami agent
+on:
+  pull_request:
+    paths:
+      - 'scripts/connect_nami_agent.py'
+      - 'nami_agent.py'
+      - 'app.py'
+      - '.github/workflows/connect-nami-agent.yml'
+jobs:
+  verify-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply migration in CI workspace
+        run: python scripts/connect_nami_agent.py
+      - name: Syntax check integrated app
+        run: python -m py_compile app.py nami_agent.py
+      - name: Planner tests
+        run: python -m unittest tests.test_nami_agent -v
+      - name: Verify integration points
+        run: |
+          grep -q 'from nami_agent import plan_with_ai' app.py
+          grep -q 'semantic_batch' app.py
+          grep -q "plan.get('outputs')" app.py
