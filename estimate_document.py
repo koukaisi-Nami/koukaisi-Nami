@@ -13,6 +13,7 @@ LINE_RE=re.compile(r'^([^：\n]{1,40})：\s*(.+)$')
 YEN_RE=re.compile(r'([0-9][0-9,]*)\s*円')
 DISCOUNT_RE=re.compile(r'(割引|値引|安く|サービス|OFF|オフ|無料|半額|減額|キャンペーン|特典)',re.I)
 MOVEIN_RE=re.compile(r'^(?:入居日|入居予定日|入居予定|契約開始日)$')
+CURRENT_RE=re.compile(r'(?:当月前家賃|当月家賃|日割り家賃|日割家賃)')
 
 def parse_customer_estimate(text):
     lines=[x.strip() for x in (text or '').splitlines() if x.strip()]
@@ -23,7 +24,6 @@ def parse_customer_estimate(text):
             title=x; continue
         if x.startswith('※'):
             notes.append(x)
-            # Also recover a move-in date from explanatory notes such as 「15日入居」.
             if not move_in:
                 m=re.search(r'([0-9]{1,2})日入居',x)
                 if m: move_in=m.group(1)+'日'
@@ -33,12 +33,25 @@ def parse_customer_estimate(text):
         label,value=m.groups(); ym=YEN_RE.search(value)
         amount=int(ym.group(1).replace(',','')) if ym else None
         if label=='合計': total=amount; continue
-        if MOVEIN_RE.match(label):
-            move_in=value; continue
+        if MOVEIN_RE.match(label): move_in=value; continue
         row=(label,value,amount)
         if DISCOUNT_RE.search(label+' '+value): discounts.append(row)
         else: items.append(row)
     return {'property':title or '物件名要確認','items':items,'discounts':discounts,'total':total,'notes':notes,'move_in':move_in}
+
+def item_breakdown(label,value):
+    if CURRENT_RE.search(label):
+        m=re.search(r'([0-9]{1,2})\s*日分',value)
+        return ('日割り '+m.group(1)+'日分') if m else '日割り'
+    return '概算' if '（仮）' in label else ''
+
+def discount_breakdown(label,value,amount):
+    joined=label+' '+value
+    if '半額' in joined:return '割引額（半額）'
+    if '無料' in joined:return '割引額（無料）'
+    m=re.search(r'([0-9][0-9,]*)\s*円(?:引き|割引|値引)',joined)
+    if m:return '割引額 '+m.group(1)+'円'
+    return '割引額' if amount is not None else '割引・特典'
 
 def make_estimate_document(text):
     d=parse_customer_estimate(text); out=BytesIO(); c=canvas.Canvas(out,pagesize=A4); w,h=A4
@@ -55,15 +68,11 @@ def make_estimate_document(text):
     c.setStrokeColorRGB(.55,.58,.62); yy=top-rowh
     rows=[x for x in d['items'] if x[1] != '－']
     for label,value,amount in rows[:15]:
-        c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh); c.setFillColorRGB(0,0,0); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,8); c.drawString(col1+4*mm,yy-6.8*mm,'概算' if '（仮）' in label else '')
-        c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,(f'{amount:,} 円' if amount is not None else value[:22])); yy-=rowh
-    # Discounts are deliberately visually separated and red so customers can see the benefit immediately.
+        c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh); c.setFillColorRGB(0,0,0); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,8); c.drawString(col1+4*mm,yy-6.8*mm,item_breakdown(label,value)[:24]); c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,(f'{amount:,} 円' if amount is not None else value[:22])); yy-=rowh
     if d['discounts']:
         yy-=3*mm; c.setFillColorRGB(*red); c.setFont(FONT,11); c.drawString(left,yy,'割引・特典'); yy-=5*mm
         for label,value,amount in d['discounts'][:5]:
-            c.setStrokeColorRGB(*red); c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh)
-            c.setFillColorRGB(*red); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,10)
-            shown=(f'▲ {amount:,} 円' if amount is not None else value[:22]); c.drawRightString(right-4*mm,yy-6.8*mm,shown); yy-=rowh
+            c.setStrokeColorRGB(*red); c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh); c.setFillColorRGB(*red); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,8); c.drawString(col1+4*mm,yy-6.8*mm,discount_breakdown(label,value,amount)[:24]); c.setFont(FONT,10); shown=(f'▲ {amount:,} 円' if amount is not None else value[:22]); c.drawRightString(right-4*mm,yy-6.8*mm,shown); yy-=rowh
     yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'お支払い概算合計'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('要確認' if d['total'] is None else f"{d['total']:,} 円"))
     ny=yy-30*mm; c.setFillColorRGB(0,0,0); c.setFont(FONT,8)
     for n in (d['notes'] or ['※ 本書は概算の見積もりです。入居日・未確定項目により金額が変動します。'])[:4]: c.drawString(left,ny,n[:85]); ny-=5*mm
@@ -72,6 +81,5 @@ def make_estimate_document(text):
 def make_estimate_image(text):
     import fitz
     pdf=fitz.open(stream=make_estimate_document(text).getvalue(),filetype='pdf')
-    # Higher resolution for LINE preview/forwarding. 3x keeps small Japanese text much sharper.
     pix=pdf[0].get_pixmap(matrix=fitz.Matrix(3,3),alpha=False)
     return BytesIO(pix.tobytes('png'))
