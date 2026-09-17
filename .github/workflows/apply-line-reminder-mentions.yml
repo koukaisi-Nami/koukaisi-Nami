@@ -15,28 +15,26 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('app.py')
-          s=p.read_text()
-
+          p=Path('app.py'); s=p.read_text()
           old='''            c.execute("CREATE INDEX IF NOT EXISTS reminders_due_idx ON reminders(status,next_run_at)")\n            c.execute("""CREATE TABLE IF NOT EXISTS estimate_batch_items('''
           new='''            c.execute("CREATE INDEX IF NOT EXISTS reminders_due_idx ON reminders(status,next_run_at)")\n            c.execute("""CREATE TABLE IF NOT EXISTS line_members(\n              conversation_id TEXT NOT NULL,user_id TEXT NOT NULL,display_name TEXT NOT NULL,\n              updated_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(conversation_id,user_id))""")\n            c.execute("CREATE INDEX IF NOT EXISTS line_members_name_idx ON line_members(conversation_id,display_name)")\n            c.execute("""CREATE TABLE IF NOT EXISTS estimate_batch_items('''
-          if old not in s: raise SystemExit('init target not found')
-          s=s.replace(old,new,1)
-
+          if 'CREATE TABLE IF NOT EXISTS line_members' not in s:
+              if old not in s: raise SystemExit('init target not found')
+              s=s.replace(old,new,1)
           marker='''def line_target(e):\n    src=e.get("source",{})\n    return src.get("groupId") or src.get("roomId") or src.get("userId")\n\n'''
-          insert='''def remember_line_member(cid,uid,display_name):\n    if not DB_URL or not cid or not uid or not display_name:return\n    try:\n        with db() as cn:\n            with cn.cursor() as c:\n                c.execute("""INSERT INTO line_members(conversation_id,user_id,display_name) VALUES(%s,%s,%s)\n                  ON CONFLICT(conversation_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""",(cid,uid,display_name))\n            cn.commit()\n    except Exception as x:print("remember_line_member",repr(x),flush=True)\n\ndef find_line_member(cid,name):\n    if not DB_URL or not cid or not name:return None\n    wanted=name.lstrip('@').strip()\n    try:\n        with db() as cn:\n            with cn.cursor() as c:\n                c.execute("""SELECT user_id,display_name FROM line_members WHERE conversation_id=%s\n                  ORDER BY CASE WHEN display_name=%s THEN 0 WHEN display_name ILIKE %s THEN 1 ELSE 2 END,updated_at DESC""",\n                  (cid,wanted,'%'+wanted+'%'))\n                rows=c.fetchall()\n        exact=[r for r in rows if r[1]==wanted]\n        partial=[r for r in rows if wanted.lower() in (r[1] or '').lower()]\n        return (exact or partial or [None])[0]\n    except Exception as x:print("find_line_member",repr(x),flush=True);return None\n\ndef line_mention_message(prefix,user_id,display_name,suffix=''):\n    mention='@'+display_name\n    text=(prefix or '')+mention+(suffix or '')\n    start=len(prefix or '')\n    return {"type":"text","text":text,"mention":{"mentionees":[{"index":start,"length":len(mention),"type":"user","userId":user_id}]}}\n\ndef push_line_mention(target,prefix,user_id,display_name,suffix=''):\n    if not TOKEN or not target:return False,"missing LINE token/target"\n    try:\n        msg=line_mention_message(prefix,user_id,display_name,suffix)\n        r=HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"to":target,"messages":[msg]},timeout=15)\n        return r.ok,("" if r.ok else f"LINE {r.status_code}: {r.text[:300]}")\n    except Exception as x:return False,repr(x)\n\n'''
-          if marker not in s: raise SystemExit('line_target marker not found')
-          s=s.replace(marker,marker+insert,1)
-
-          old='''                            msg=f"{assignee}：{current} の完了待ちです。終わったら『完了』と送ってください。"\n                            push_line(target,msg)'''
-          new='''                            member=find_line_member(target,assignee)\n                            suffix=f"：{current} の完了待ちです。終わったら『完了』と送ってください。"\n                            if member:\n                                push_line_mention(target,"",member[0],member[1],suffix)\n                            else:\n                                push_line(target,f"{assignee}{suffix}")'''
-          if old not in s: raise SystemExit('reminder push target not found')
+          insert='''def remember_line_member(cid,uid,display_name):\n    if not DB_URL or not cid or not uid or not display_name:return\n    try:\n        with db() as cn:\n            with cn.cursor() as c:\n                c.execute("""INSERT INTO line_members(conversation_id,user_id,display_name) VALUES(%s,%s,%s) ON CONFLICT(conversation_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""",(cid,uid,display_name))\n            cn.commit()\n    except Exception as x:print("remember_line_member",repr(x),flush=True)\n\ndef find_line_member(cid,name):\n    if not DB_URL or not cid or not name:return None\n    wanted=name.lstrip('@').strip()\n    try:\n        with db() as cn:\n            with cn.cursor() as c:\n                c.execute("SELECT user_id,display_name FROM line_members WHERE conversation_id=%s ORDER BY updated_at DESC",(cid,)); rows=c.fetchall()\n        exact=[r for r in rows if r[1]==wanted]; partial=[r for r in rows if wanted.lower() in (r[1] or '').lower()]\n        return (exact or partial or [None])[0]\n    except Exception as x:print("find_line_member",repr(x),flush=True);return None\n\ndef push_line_mention(target,prefix,user_id,display_name,suffix=''):\n    if not TOKEN or not target:return False,"missing LINE token/target"\n    mention='@'+display_name; text=(prefix or '')+mention+(suffix or ''); start=len(prefix or '')\n    msg={"type":"text","text":text,"mention":{"mentionees":[{"index":start,"length":len(mention),"type":"user","userId":user_id}]}}\n    try:\n        r=HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"to":target,"messages":[msg]},timeout=15)\n        return r.ok,("" if r.ok else f"LINE {r.status_code}: {r.text[:300]}")\n    except Exception as x:return False,repr(x)\n\n'''
+          if 'def remember_line_member(' not in s:
+              if marker not in s: raise SystemExit('line target marker not found')
+              s=s.replace(marker,marker+insert,1)
+          old='''                    ok,err=push_line(target,f"【タスクリマインド】\\n{assignee}：{task}\\n完了したら「{task}完了」と報告してください。")'''
+          new='''                    member=find_line_member(target,assignee)\n                    suffix=f"：{task}\\n完了したら「{task}完了」と報告してください。"\n                    if member:\n                        ok,err=push_line_mention(target,"【タスクリマインド】\\n",member[0],member[1],suffix)\n                    else:\n                        ok,err=push_line(target,f"【タスクリマインド】\\n{assignee}{suffix}")'''
+          if old not in s: raise SystemExit('reminder loop target not found')
           s=s.replace(old,new,1)
-
           old='''        cid,uid=ids(e); nm=name(e); eid=e.get("webhookEventId") or m.get("id"); mid=m.get("id")\n        qid=m.get("quotedMessageId")'''
           new='''        cid,uid=ids(e); nm=name(e); eid=e.get("webhookEventId") or m.get("id"); mid=m.get("id")\n        remember_line_member(cid,uid,nm)\n        qid=m.get("quotedMessageId")'''
-          if old not in s: raise SystemExit('webhook identity target not found')
-          s=s.replace(old,new,1)
+          if 'remember_line_member(cid,uid,nm)' not in s:
+              if old not in s: raise SystemExit('webhook identity target not found')
+              s=s.replace(old,new,1)
           p.write_text(s)
           PY
       - name: Syntax check
