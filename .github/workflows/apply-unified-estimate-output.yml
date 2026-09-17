@@ -1,0 +1,73 @@
+name: Apply unified estimate output
+on:
+  push:
+    branches: [fix/estimate-breakdown-labels]
+    paths: ['.github/workflows/apply-unified-estimate-output.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unify estimate text image PDF flow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('app.py'); s=p.read_text()
+
+          def replace_func(name,new,next_name):
+              global s
+              pat=rf'def {name}\(.*?(?=\ndef {next_name}\()'
+              s2,n=re.subn(pat,new.rstrip()+"\n",s,flags=re.S)
+              if n!=1: raise SystemExit(f'{name} replace count={n}')
+              s=s2
+
+          replace_func('is_batch_estimate_command', '''def is_batch_estimate_command(text):
+    t=text or ''
+    batch_word=r"(?:まとめて|一括|全部|全て|すべて|全物件|この(?:三|3|３)件|[0-9０-９一二三四五六七八九十]+\\s*(?:件|物件)(?:分)?)"
+    output_word=r"(?:見積|初期費用|画像|写真|PNG|PDF|文章|テキスト)"
+    return bool(re.search(batch_word+r".*"+output_word+"|"+output_word+r".*"+batch_word,t,re.I))
+''','batch_artifact_marker')
+
+          replace_func('single_estimate_prompt', '''def single_estimate_prompt(user_instruction=""):
+    return ("募集図面から初期費用見積を作成する。以下の出力形式を一字一句の構造として守る。説明文、Markdown見出し、表、募集条件一覧、要確認一覧、計算過程は禁止。\\n"
+            "【初期費用概算】\\n物件名\\n入居日：指定があれば記載、なければ－\\n"
+            "当月前家賃：金額または－\\n次月前家賃：金額または－\\n敷金：金額または－\\n礼金：金額または－\\n初回保証料：金額または－\\n仲介手数料：金額または－\\n火災保険：金額\\n24時間サポート：金額または－\\n鍵交換：金額または－\\n事務手数料：金額または－\\n必要なら追加契約時費用：金額\\n割引：割引額または－\\n合計：確定できる金額の合計\\n\\n※入居日・未確定項目により金額が変動します。\\n"
+            "管理費・共益費は前家賃に含める。入居日指定時の当月前家賃は日割り計算し、値は『142,400円（日割り16日分）』のように日割り情報を同じ行へ必ず含める。指定なしは－。次月前家賃は賃料＋管理費・共益費。\\n"
+            "仲介手数料は今回のユーザー指示で指定された場合だけ計上。半額・無料・○円引き・○%OFF等を意味で解釈し、割引がある場合は『割引：68,475円（仲介手数料半額）』のように割引額を必ず明示し、合計は割引後にする。\\n"
+            "住宅保険の金額記載があれば火災保険へ。金額不明または記載なしは火災保険（仮）20,000円を合計へ。保証料の金額・率がなければ賃料＋管理費の50%を初回保証料（仮）として合計へ。\\n"
+            "資料にない金額は上記fallback以外推測しない。分かる項目だけで必ず見積を完成させ、資料不足を理由に確認質問で止めない。\\n"
+            "【今回のユーザー指定】"+(user_instruction or "なし"))
+''','batch_estimates_using_single')
+
+          replace_func('batch_estimates_using_single', '''def batch_estimates_using_single(groups,user_instruction,uid,cid):
+    """One canonical estimate per property. The same text drives LINE text, PNG and PDF."""
+    answers=[]; total=len(groups)
+    for index,g in enumerate(groups,1):
+        p=g['property']; analyses='\\n---\\n'.join(a.get('analysis','') for a in g['attachments'])
+        material=f"物件名：{p.get('name','')}\\n号室：{p.get('room','')}\\n住所：{p.get('address','')}\\n【募集図面の読取結果】\\n{analyses}"
+        instruction=(user_instruction or '')+f"\\n全{total}件中{index}件目。この1物件だけを計算。他物件を混ぜない。画像/PDF/文章という語は出力形式指定であり計算条件ではない。"
+        estimate=ai(single_estimate_prompt(instruction)+"\\n\\n"+material,uid,cid)
+        # Remove accidental prose before the canonical marker so renderer and text share identical data.
+        marker='【初期費用概算】'
+        if marker in estimate: estimate=marker+estimate.split(marker,1)[1]
+        answers.append(estimate.strip())
+    return answers
+''','three_document_command')
+
+          # Batch text remains one bubble per property; artifacts remain one property per image/PDF.
+          p.write_text(s)
+          PY
+          python -m py_compile app.py estimate_document.py
+          python -m unittest discover -s tests -v
+      - name: Commit
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Unify estimate text image and PDF output"
+          git push
