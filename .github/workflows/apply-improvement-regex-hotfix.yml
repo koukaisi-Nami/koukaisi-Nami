@@ -25,15 +25,13 @@ jobs:
           python - <<'PY'
           import ast, re
           src=open('app.py',encoding='utf-8').read()
-          ast.parse(src)
-          m=re.search(r'def improvement_intent\(text\):(.+?)\ndef ', src, re.S)
-          assert m, 'improvement_intent missing'
-          block=m.group(1)
-          # Extract/compile the exact concatenated raw regex literals from the function.
-          tree=ast.parse('x='+block.split('return bool(re.search(',1)[1].rsplit(',\n        text or',1)[0].strip())
-          pattern=ast.literal_eval(tree.body[0].value)
-          re.compile(pattern, re.I)
-          assert re.search(pattern, 'いい感じに改善しといて', re.I)
+          tree=ast.parse(src)
+          fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='improvement_intent')
+          call=fn.body[-1].value.args[0]
+          search_call=call.args[0]
+          pattern=ast.literal_eval(search_call.args[0])
+          re.compile(pattern,re.I)
+          assert re.search(pattern,'いい感じに改善しといて',re.I)
           print('regex compiles and improvement request matches')
           PY
       - name: Commit hotfix to branch only
