@@ -14,6 +14,11 @@ class FakeResponse:
             {"id": "gpt-5.7-luna"},
             {"id": "gpt-5.7-terra"},
             {"id": "gpt-5.7-sol"},
+            {"id": "gpt-image-2"},
+            {"id": "gpt-image-3"},
+            {"id": "gpt-realtime-2.1"},
+            {"id": "gpt-realtime-3"},
+            {"id": "gpt-realtime-3-mini"},
             {"id": "weird-new-model"},
         ]}
 
@@ -30,6 +35,7 @@ class FrontierTests(unittest.TestCase):
         for name in (
             "NAMI_FAST_MODEL", "NAMI_BALANCED_MODEL", "NAMI_STRONG_MODEL",
             "NAMI_IMAGE_MODEL", "NAMI_REALTIME_MODEL", "NAMI_TRANSCRIBE_MODEL",
+            "NAMI_TTS_MODEL", "NAMI_EMBEDDING_MODEL",
         ):
             os.environ.pop(name, None)
         os.environ["NAMI_AUTO_MODEL_DISCOVERY"] = "true"
@@ -43,12 +49,16 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(s.image, "gpt-image-2")
         self.assertEqual(s.realtime, "gpt-realtime-2.1")
         self.assertEqual(s.transcribe, "gpt-transcribe")
+        self.assertEqual(s.tts, "gpt-4o-mini-tts")
+        self.assertEqual(s.embedding, "text-embedding-3-large")
 
     def test_auto_discovery_moves_only_compatible_lanes(self):
         s = nf.current_stack("key", FakeHTTP())
         self.assertEqual(s.fast, "gpt-5.7-luna")
         self.assertEqual(s.balanced, "gpt-5.7-terra")
         self.assertEqual(s.strong, "gpt-5.7-sol")
+        self.assertEqual(s.image, "gpt-image-3")
+        self.assertEqual(s.realtime, "gpt-realtime-3")
 
     def test_unknown_names_never_override(self):
         self.assertIsNone(nf._version_tuple("weird-new-model"))
