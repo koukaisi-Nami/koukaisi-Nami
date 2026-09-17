@@ -399,18 +399,23 @@ def history(cid,n=CHAT_HISTORY_COUNT):
     except: return []
 
 def add_memory(scope,sid,cat,subject,content,uid):
-    if not content.strip():return
+    content=(content or "").strip()
+    if not content.strip():
+        return
+    if scope not in ("user","conversation","company"):
+        return
+    sid="company" if scope=="company" else str(sid)
     try:
         with db() as cn:
             with cn.cursor() as c:
-                # avoid exact duplicates
                 c.execute("""SELECT id FROM memories WHERE scope=%s AND scope_id=%s
-                AND lower(content)=lower(%s) LIMIT 1""",(scope,sid,content.strip()))
+                AND lower(content)=lower(%s) LIMIT 1""",(scope,sid,content))
                 if not c.fetchone():
                     c.execute("""INSERT INTO memories(scope,scope_id,category,subject,content,created_by)
-                    VALUES(%s,%s,%s,%s,%s,%s)""",(scope,sid,cat,subject,content.strip(),uid))
+                    VALUES(%s,%s,%s,%s,%s,%s)""",(scope,sid,cat,(subject or "").strip(),content,uid))
             cn.commit()
-    except Exception as x: print("add_memory",repr(x),flush=True)
+    except Exception as x:
+        print("add_memory",repr(x),flush=True)
 
 def memory_terms(text):
     raw=(text or "").lower(); terms=[]
@@ -421,22 +426,27 @@ def memory_terms(text):
     return list(dict.fromkeys(terms))[:12]
 
 def mems(uid,cid,query="",limit=MEMORY_CONTEXT_COUNT):
-    """All memories remain stored; this ranks the small working set for one reply."""
+    """Keep all memories in PostgreSQL and select a relevant working set."""
     try:
         with db() as cn:
             with cn.cursor() as c:
                 c.execute("""SELECT scope,category,subject,content FROM memories WHERE
                 (scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s)
                 OR (scope='company' AND scope_id='company')
-                ORDER BY updated_at DESC LIMIT 160""",(uid,cid)); rows=c.fetchall()
-        terms=memory_terms(query)
+                ORDER BY updated_at DESC LIMIT 160""",(str(uid),str(cid)))
+                rows=c.fetchall()
+        terms=[str(x).lower() for x in memory_terms(query) if str(x).strip()]
         def score(row):
-            scope,category,subject,content=row; hay=(str(category)+" "+str(subject)+" "+str(content)).lower()
-            hits=sum(8 if term in (subject or "").lower() else 3 for term in terms if term in hay)
+            scope,category,subject,content=row
+            subject=str(subject or "")
+            hay=" ".join(str(x or "") for x in (category,subject,content)).lower()
+            hits=sum((8 if term in subject.lower() else 3) for term in terms if term in hay)
             return hits+{"conversation":2,"user":1,"company":0}.get(scope,0)
-        ranked=sorted(rows,key=score,reverse=True); relevant=[r for r in ranked if score(r)>2]
-        return (relevant+[r for r in ranked if r not in relevant])[:limit]
-    except:return []
+        ranked=sorted(rows,key=score,reverse=True)
+        relevant=[r for r in ranked if score(r)>2]
+        return (relevant+[r for r in ranked if r not in relevant])[:max(1,int(limit))]
+    except Exception:
+        return []
 
 def add_skill(name,body,uid):
     try:
@@ -875,15 +885,33 @@ Markdown表、詳細解析、計算過程、仲介手数料内訳は禁止。管
     return media_ai(img,mime,uid,cid,prompt)
 
 def learn_important(text,uid,cid):
-    # Conservative automatic memory: clear self/customer/company facts only.
-    t=text.strip()
-    if len(t)<2 or len(t)>500:return
-    personal=re.search(r"(俺|私|僕|自分|わたし).{0,20}(好き|嫌い|希望|住んで|会社|仕事|誕生日|名前)",t)
-    customer=re.search(r"(.+?さん).{0,30}(家賃|予算|入居|ペット|犬|猫|間取り|エリア|駅|審査|法人|個人)",t)
-    company=re.search(r"(弊社|うちの会社|Steer Ship).{0,80}(手数料|ルール|料金|見積|請求|フロー)",t,re.I)
-    if personal:add_memory("user",uid,"profile","本人情報",t,uid)
-    elif customer:add_memory("conversation",cid,"customer",customer.group(1),t,uid)
-    elif company:add_memory("company","company","company_knowledge","会社情報",t,uid)
+    # Save only durable, clearly attributable facts. Company-wide memories require
+    # an explicit sharing scope so personal or project information is never promoted.
+    t=(text or "").strip()
+    if len(t)<2 or len(t)>500:
+        return None
+
+    company_scope=re.search(r"(全社|全社共通|会社全体|社内共通|全グループ|会社ルール|弊社ルール)",t,re.I)
+    company_fact=re.search(r"(ルール|規定|方針|標準|手数料|料金|請求|見積|フロー|営業時間|禁止|必須)",t,re.I)
+    if company_scope and company_fact:
+        add_memory("company","company","company_rule","会社共通ルール",t,uid)
+        return "会社共通ルールとして記憶しました。"
+    if company_fact and re.search(r"(弊社|うちの会社|会社|社内|業務)",t,re.I):
+        return "これは全社共通ルールとして保存してよい？"
+
+    personal=re.search(r"(?:俺|私|僕|自分|わたし)(?:のこと)?(?:は|を|って|なら)?[^。！？\n]{0,80}(?:呼んで|呼び|好き|嫌い|希望|住んで|会社|仕事|誕生日|名前|好み|苦手|覚えて)",t,re.I)
+    personal=personal or re.search(r"(?:俺|私|僕|自分|わたし)の?名前は|(?:俺|私|僕|自分|わたし)を.{0,20}呼んで",t,re.I)
+    if personal:
+        add_memory("user",uid,"profile","本人の好み・属性",t,uid)
+        return None
+
+    group_scope=re.search(r"(このグループ|この会話|この案件|この顧客|このお客|このスレッド)",t,re.I)
+    customer=re.search(r"(.{1,50}?さん).{0,50}(家賃|予算|入居|ペット|犬|猫|間取り|エリア|駅|審査|法人|個人|希望|物件|案件)",t,re.I)
+    if group_scope or customer:
+        subject=customer.group(1).strip() if customer else "グループ情報"
+        add_memory("conversation",cid,"customer" if customer else "group_context",subject,t,uid)
+        return None
+    return None
 
 
 def save_manager_insight(cid,uid,itype,severity,summary):
@@ -964,16 +992,37 @@ speak=trueはseverity 4以上だけ。messageは事実→理由→具体的な�
 
 
 def explicit_learning(text,uid):
-    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",text.strip(),flags=re.I)
+    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",(text or "").strip(),flags=re.I)
+    if not t:
+        return None
+
+    company_scope=re.search(r"(全社|全社共通|会社全体|社内共通|全グループ|会社ルール|弊社ルール)",t,re.I)
+    if company_scope:
+        payload=re.sub(r"(全社共通|全社|会社全体|社内共通|全グループ|会社ルール|弊社ルール)[、,:：\s]*","",t,flags=re.I).strip()
+        if payload:
+            add_memory("company","company","company_rule","会社共通ルール",payload,uid)
+            return "会社共通ルールとして覚えたよ🧭"
+
+    group=re.search(r"(?:このグループ|この会話|この案件|このスレッド)(?:では|のルールは)?[：:、,\s]*(.+)",t,re.S|re.I)
+    if group:
+        add_memory("conversation",cid if 'cid' in locals() else "", "group_context","グループルール",group.group(1).strip(),uid)
+        return "このグループの記憶として覚えたよ🧭"
+
     m=re.search(r"(.{1,50}?)(?:の作り方|のやり方|のルール)[：:、,\s]*(.+)",t,re.S)
     if m:
-        add_skill(m.group(1)+"の作り方",m.group(2),uid);return f"学習したよ🧭\n【{m.group(1)}の作り方】\n{m.group(2)}"
+        add_skill(m.group(1)+"の作り方",m.group(2),uid)
+        return f"学習したよ🧭\n【{m.group(1)}の作り方】\n{m.group(2)}"
     m=re.search(r"(?:学習して|今後はこれで|このやり方を覚えて)[：:、,\s]*(.+)",t,re.S)
     if m:
-        add_skill("業務ルール",m.group(1),uid);return "業務ルールとして学習したよ🧭"
+        add_skill("業務ルール",m.group(1),uid)
+        return "業務ルールとして学習したよ🧭"
     m=re.search(r"(.+?)って覚えて(?:おいて)?[！!。.]?$",t,re.S)
     if m:
-        add_memory("user",uid,"general","",m.group(1),uid);return f"覚えたよ🧭\n「{m.group(1)}」"
+        fact=m.group(1).strip()
+        if re.search(r"(会社|社内|全社|全グループ|弊社)",fact,re.I):
+            return "これは全社共通ルールとして保存してよい？"
+        add_memory("user",uid,"general","本人から明示された記憶",fact,uid)
+        return f"覚えたよ🧭\n「{fact}」"
     return None
 
 
