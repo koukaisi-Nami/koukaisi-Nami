@@ -161,8 +161,10 @@ def mems(uid,cid):
                 c.execute("""SELECT scope,category,subject,content FROM memories WHERE
                 (scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s)
                 OR (scope='company' AND scope_id='company')
-                ORDER BY updated_at DESC LIMIT 40""",(uid,cid)); return c.fetchall()
-    except:return []
+                ORDER BY updated_at DESC LIMIT 120""",(uid,cid))
+                return c.fetchall()
+    except Exception:
+        return []
 
 def add_skill(name,body,uid):
     try:
@@ -450,10 +452,50 @@ SYSTEM="""あなたは航海士ナミ。優秀な日本の不動産賃貸仲介�
 新機能が有効そうなら提案はできるが、本番コードの変更は必ず承認フローを通す。"""
 
 def ctx(uid,cid,extra=""):
-    h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x}" for r,n,x in history(cid))
-    m="\n".join(f"- [{s}/{cat}/{sub}] {x}" for s,cat,sub,x in mems(uid,cid))
-    sk="\n".join(f"- 【{n}】{x}" for n,x in skill_rows())
-    return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{extra}"
+    # Keep the full history and all memories in storage, but send only a small,
+    # topic-relevant slice to the model.
+    hs=list(history(cid) or [])
+    recent=hs[-10:]
+    h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {str(x)[:1200]}" for r,n,x in recent)
+    if len(h)>6500:
+        h=h[-6500:]
+
+    topic=" ".join(str(x) for _,_,x in hs[-6:])+" "+str(extra)
+
+    def terms(v):
+        v=str(v or "").lower()
+        out=set(re.findall(r"[a-z0-9_]{2,}|[\u3040-\u30ff\u3400-\u9fff]{2,}",v))
+        for run in re.findall(r"[\u3040-\u30ff\u3400-\u9fff]+",v):
+            out.update(run[i:i+2] for i in range(len(run)-1))
+        return out
+
+    qt=terms(topic)
+
+    def rank_text(value):
+        value=str(value or "").lower()
+        ts=terms(value)
+        score=sum(3 for q in qt if q in ts)
+        score+=sum(1 for q in qt if len(q)>=2 and q in value)
+        return score
+
+    rows=[]
+    for i,row in enumerate(mems(uid,cid)):
+        scope,cat,sub,content=row
+        score=rank_text(" ".join(map(str,(scope,cat,sub,content))))
+        rows.append((score,i,row))
+    rows.sort(key=lambda z:(z[0],-z[1]),reverse=True)
+    selected=[row for _,_,row in rows[:14]]
+    m="\n".join(f"- [{s}/{cat}/{sub}] {x}" for s,cat,sub,x in selected)
+
+    skills=[]
+    for i,row in enumerate(skill_rows() or []):
+        n,x=row
+        skills.append((rank_text(f"{n} {x}"),-i,n,x))
+    skills.sort(reverse=True)
+    selected_skills=skills[:8]
+    sk="\n".join(f"- 【{n}】{x}" for _,__,n,x in selected_skills)
+
+    return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶（今回の話題に関連）】\n{m or 'なし'}\n【会社ルール（今回の話題に関連）】\n{sk or 'なし'}\n{extra}"
 
 def ai(text,uid,cid,img=None,mime=None,extra=""):
     parts=[{"type":"input_text","text":ctx(uid,cid,extra)+"\n【今回】\n"+text}]
