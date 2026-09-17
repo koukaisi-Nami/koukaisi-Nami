@@ -1,0 +1,20 @@
+name: Test Nami agent
+on:
+  pull_request:
+    paths:
+      - 'nami_agent.py'
+      - 'tests/test_nami_agent.py'
+      - '.github/workflows/test-nami-agent.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m py_compile nami_agent.py tests/test_nami_agent.py
+      - name: Unit tests
+        run: python -m unittest tests.test_nami_agent -v
