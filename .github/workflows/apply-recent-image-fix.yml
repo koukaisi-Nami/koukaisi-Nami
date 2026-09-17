@@ -1,0 +1,28 @@
+name: Apply recent image context fix
+on:
+  push:
+    branches: [chapi-recent-image-context-fix]
+    paths: [patch_recent_image.py]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-recent-image-context-fix
+      - run: python patch_recent_image.py
+      - name: Validate
+        run: |
+          python -m py_compile app.py
+          grep -q '直前の募集図面の読取結果' app.py
+          grep -q '画像にリプライしなくても大丈夫' app.py
+      - name: Commit
+        run: |
+          git config user.name 'Chapi'
+          git config user.email 'actions@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Use recent image context for estimate follow-ups'
+          git push origin HEAD:chapi-recent-image-context-fix
