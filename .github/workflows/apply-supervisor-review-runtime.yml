@@ -1,0 +1,41 @@
+name: Apply supervisor review runtime
+on:
+  push:
+    branches: [nami/improve-1789659281]
+    paths:
+      - 'scripts/implement_supervisor_review_loop.py'
+      - 'tests/test_supervisor_review_runtime.py'
+      - '.github/workflows/apply-supervisor-review-runtime.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: nami/improve-1789659281
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply runtime integration
+        run: python scripts/implement_supervisor_review_loop.py
+      - name: Static safety guards
+        run: |
+          python -m py_compile app.py nami_supervisor.py owner_guard.py
+          grep -q 'def supervisor_review' app.py
+          grep -q 'def reviewed_candidate' app.py
+          grep -q 'range(1,4)' app.py
+      - name: Regression tests
+        run: |
+          python -m pip install pytest
+          python -m pytest -q test_nami_supervisor.py tests/test_supervisor_review_runtime.py
+          python -m unittest tests.test_owner_guard
+      - name: Commit generated runtime only to PR branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Wire real supervisor review loop into Nami runtime'
+          git push

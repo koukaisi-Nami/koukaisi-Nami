@@ -622,8 +622,55 @@ def codegen_improvement(req_text,uid,cid):
     current,_=repo_file()
     return targeted_candidate(req_text,current)
 
+def supervisor_review(req_text,current,candidate,attempt):
+    """Review only the proposed code change. Never merge or mutate memory here."""
+    targets=improvement_targets(req_text,candidate)
+    selected="\n\n".join(f"【{name}】\n{body}" for name,body in targets.items())
+    instruction="""あなたは航海士ナミの上位コードレビューAI。要求と候補コードを厳格に照合する。
+既存機能・個人/グループ/会社記憶の分離・owner guard・承認前マージ禁止を壊さないこと。
+秘密情報を要求/出力しない。問題がなければapprove。問題があればfixと具体的な修正指示を返す。
+JSONのみ: {"action":"approve|fix","feedback":"具体的な理由と修正指示"}。"""
+    text=f"【要求】\n{req_text}\n【レビュー試行】{attempt}/3\n【候補コード（関連関数のみ）】\n{selected}"
+    payload={"model":MODEL,"instructions":instruction,"input":[{"role":"user","content":[{"type":"input_text","text":text}]}],"max_output_tokens":900}
+    r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)
+    if not r.ok: raise RuntimeError(f"supervisor review failed {r.status_code}")
+    d=r.json(); out=d.get("output_text","")
+    if not out:
+        xs=[]
+        for item in d.get("output",[]):
+            if item.get("type")=="message":
+                for z in item.get("content",[]):
+                    if z.get("type")=="output_text": xs.append(z.get("text",""))
+        out="\n".join(xs)
+    out=re.sub(r"^```(?:json)?\s*|\s*```$","",out.strip())
+    try:data=json.loads(out)
+    except Exception as x: raise RuntimeError("上位AIレビューJSONが不正: "+str(x))
+    action=str(data.get("action","")).lower()
+    if action not in ("approve","fix"): raise RuntimeError("上位AIレビュー判定が不正")
+    return action,str(data.get("feedback","")).strip()[:4000]
+
+def reviewed_candidate(req_text):
+    """Generate, validate and supervisor-review a candidate, bounded to three attempts."""
+    current,_=repo_file()
+    candidate=targeted_candidate(req_text,current)
+    audit=[]
+    for attempt in range(1,4):
+        errors=validate_candidate(candidate)
+        if errors:
+            audit.append(f"attempt {attempt}: guard failed: "+"; ".join(errors[:5]))
+            if attempt>=3:return None,audit,"安全チェックが3回以内に解消しなかった"
+            candidate=targeted_candidate(req_text+"\n【前回の安全チェックエラー】\n"+"\n".join(errors[:10]),current)
+            continue
+        action,feedback=supervisor_review(req_text,current,candidate,attempt)
+        audit.append(f"attempt {attempt}: supervisor {action}: {feedback[:500]}")
+        if action=="approve":return candidate,audit,None
+        if attempt>=3:return None,audit,"上位AIレビューが3回以内に承認しなかった"
+        candidate=targeted_candidate(req_text+"\n【上位AIレビュー修正指示】\n"+feedback,current)
+    return None,audit,"レビュー上限に到達"
+
 def create_pr(req_text):
-    candidate=codegen_improvement(req_text,"system","system")
+    candidate,audit,review_error=reviewed_candidate(req_text)
+    if review_error:return None,review_error+"\n"+"\n".join(audit[-3:])
     errors=validate_candidate(candidate)
     if errors:return None,"安全チェック停止:\n- "+"\n- ".join(errors[:15])
     current,base_sha=repo_file()
@@ -639,7 +686,7 @@ def create_pr(req_text):
     if not r.ok: gh_fail("candidate commit failed",r)
     r=gh("POST","/pulls",json={"title":"航海士ナミ 自己改善",
       "head":branch,"base":GITHUB_BRANCH,
-      "body":"LINEから作成した改善候補。必須機能ガード済み。船長のLINE承認後のみマージ。"})
+      "body":"LINEから作成した改善候補。上位AIレビュー（最大3回）と必須機能ガード済み。船長のLINE承認後のみマージ。\n\nレビュー監査:\n"+"\n".join(audit[-3:])[:4000]})
     if not r.ok: gh_fail("PR create failed",r)
     d=r.json()
     return (d["number"],d["html_url"]),None
@@ -681,9 +728,14 @@ def merge_pr(num):
 
 def improvement_intent(text):
     # Explicit owner development instructions must never fall through to memory/chat.
+    # Review-loop and approval-related requests are also routed to the improvement flow.
     return bool(re.search(
         r"(機能改善|改善して|直して|修正して|機能追加|できるようにして|アップデートして|改修して|"
-        r"コード.{0,24}(?:変更|修正|直|書き換)|(?:実装|追加)して|PR.{0,24}(?:作|作成))",
+        r"コード.{0,24}(?:変更|修正|直|書き換)|(?:実装|追加)して|"
+        r"PR.{0,24}(?:作|作成|レビュー)|"
+        r"(?:上位AI|自動).{0,16}(?:レビュー|確認)|"
+        r"レビュー.{0,16}(?:して|させて)|"
+        r"(?:反映|マージ|デプロイ).{0,16}(?:していい|してよい|して)",
         text or "", re.I))
 
 def improvement_plan(text,uid,cid):
@@ -791,7 +843,16 @@ def ctx(uid,cid,query="",extra=""):
     h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x[:700]}" for r,n,x in history(cid))
     m="\n".join(f"- [{s}/{cat}/{sub}] {x[:700]}" for s,cat,sub,x in mems(uid,cid,query))
     sk="\n".join(f"- 【{n}】{x[:900]}" for n,x in skill_rows(query))
-    return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{extra}"
+    safety=(
+        "【コード改善PRの安全手順】\n"
+        "コード改善PRを作成する場合は、作成後に上位AIによる自動レビューを実施する。"
+        "問題があれば修正して再テストし、問題がなくなるまで最大3回まで繰り返す。"
+        "テストがすべて成功しても、mainへのマージや本番反映は行わず、最後にユーザーへ"
+        "『反映していい？』と確認する。ユーザーが明示的に『反映して』と言うまで、"
+        "マージ・デプロイ・本番反映を絶対に実行しない。既存機能、記憶、DBデータは保持し、"
+        "秘密情報をコードへ埋め込まず、DB変更は後方互換なALTER/CREATE IF NOT EXISTSのみ使用する。"
+    )
+    return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{safety}\n{extra}"
 
 def format_retry(text):
     m=re.search(r"try again in\s+([0-9]+)m(?:([0-9.]+)s)?",text or "",re.I)
