@@ -8,7 +8,8 @@ from estimate_document import make_estimate_document, make_estimate_image
 from structured_estimate_runtime import generate_text as structured_estimate
 from owner_guard import can_self_improve
 from nami_frontier import model_for_task, reasoning_for_task, task_for_text
-from nami_openai_media import wants_image_generation, image_prompt, generate_image
+from nami_openai_media import wants_image_generation, image_prompt, generate_image, transcribe
+from nami_rag import create_vector_store, index_pdf, file_search_tool
 from nami_supervisor import route_intent, line_scope, wants_company_memory, needs_supervisor_review, reviewer_instructions
 
 app = Flask(__name__)
@@ -133,11 +134,71 @@ def init_db():
               conversation_id TEXT NOT NULL,user_id TEXT NOT NULL,display_name TEXT NOT NULL,
               updated_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(conversation_id,user_id))""")
             c.execute("CREATE INDEX IF NOT EXISTS line_members_name_idx ON line_members(conversation_id,display_name)")
+            c.execute("""CREATE TABLE IF NOT EXISTS rag_stores(
+              scope TEXT NOT NULL,scope_id TEXT NOT NULL,vector_store_id TEXT NOT NULL UNIQUE,
+              created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW(),
+              PRIMARY KEY(scope,scope_id))""")
+            c.execute("""CREATE TABLE IF NOT EXISTS rag_files(
+              id BIGSERIAL PRIMARY KEY,scope TEXT NOT NULL,scope_id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL,line_message_id TEXT,filename TEXT DEFAULT '',
+              openai_file_id TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("CREATE INDEX IF NOT EXISTS rag_files_scope_idx ON rag_files(scope,scope_id,created_at DESC)")
             c.execute("""CREATE TABLE IF NOT EXISTS estimate_batch_items(
               id BIGSERIAL PRIMARY KEY,conversation_id TEXT NOT NULL,user_id TEXT,
               line_message_id TEXT UNIQUE,analysis TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW())""")
             c.execute("CREATE INDEX IF NOT EXISTS estimate_batch_conv ON estimate_batch_items(conversation_id,created_at DESC)")
         cn.commit()
+
+
+def rag_store_ids(uid,cid):
+    if not DB_URL:return []
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("""SELECT vector_store_id FROM rag_stores WHERE
+                  (scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s)
+                  OR (scope='company' AND scope_id='company') ORDER BY updated_at DESC LIMIT 3""",(str(uid),str(cid)))
+                return [r[0] for r in c.fetchall() if r and str(r[0]).startswith('vs_')]
+    except Exception as x:
+        print('rag_store_ids',repr(x),flush=True);return []
+
+def rag_get_or_create(scope,sid):
+    if not DB_URL or scope not in ('user','conversation','company'):return None
+    sid='company' if scope=='company' else str(sid)
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("SELECT vector_store_id FROM rag_stores WHERE scope=%s AND scope_id=%s",(scope,sid));row=c.fetchone()
+                if row:return row[0]
+        vs=create_vector_store('nami-'+scope+'-'+hashlib.sha256(sid.encode()).hexdigest()[:12],OPENAI_KEY,HTTP)
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("""INSERT INTO rag_stores(scope,scope_id,vector_store_id) VALUES(%s,%s,%s)
+                  ON CONFLICT(scope,scope_id) DO UPDATE SET updated_at=NOW() RETURNING vector_store_id""",(scope,sid,vs));stored=c.fetchone()[0]
+            cn.commit();return stored
+    except Exception as x:
+        print('rag_get_or_create',repr(x),flush=True);return None
+
+def start_rag_index_pdf(cid,uid,mid,filename,blob):
+    # PDFs are isolated to the current conversation by default. Source files expire
+    # at the provider, while the local DB only stores compact IDs/metadata.
+    if not blob or not OPENAI_KEY or not DB_URL:return
+    def worker():
+        try:
+            vs=rag_get_or_create('conversation',cid)
+            if not vs:return
+            file_id,_=index_pdf(blob,filename or 'document.pdf',vs,OPENAI_KEY,HTTP,{
+                'scope':'conversation','source':'line_pdf',
+                'scope_hash':hashlib.sha256(str(cid).encode()).hexdigest()[:16]})
+            with db() as cn:
+                with cn.cursor() as c:
+                    c.execute("""INSERT INTO rag_files(scope,scope_id,conversation_id,line_message_id,filename,openai_file_id)
+                      VALUES('conversation',%s,%s,%s,%s,%s)""",(str(cid),str(cid),mid,(filename or '')[:180],file_id))
+                    c.execute("UPDATE rag_stores SET updated_at=NOW() WHERE scope='conversation' AND scope_id=%s",(str(cid),))
+                cn.commit()
+            print('RAG_INDEXED',str(cid)[:24],file_id,flush=True)
+        except Exception as x:print('rag_index_pdf',repr(x),flush=True)
+    threading.Thread(target=worker,daemon=True,name='nami-rag-index').start()
 
 def add_estimate_batch_item(cid,uid,mid,analysis):
     try:
@@ -933,9 +994,12 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
     if needs_web:
         payload["tools"]=[{"type":"web_search"}]
         payload["tool_choice"]="auto"
-    vector_store=os.getenv("OPENAI_VECTOR_STORE_ID","").strip()
-    if vector_store and runtime_task in ("knowledge","document","balanced"):
-        payload.setdefault("tools",[]).append({"type":"file_search","vector_store_ids":[vector_store]})
+    vector_stores=rag_store_ids(uid,cid)
+    configured_store=os.getenv("OPENAI_VECTOR_STORE_ID","").strip()
+    if configured_store.startswith("vs_") and configured_store not in vector_stores: vector_stores.append(configured_store)
+    rag_tool=file_search_tool(vector_stores,max_results=4)
+    if rag_tool and runtime_task in ("knowledge","document","balanced","web","chat"):
+        payload.setdefault("tools",[]).append(rag_tool)
         payload["tool_choice"]="auto"
     try:
         r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=90)
@@ -1434,10 +1498,22 @@ def webhook():
     for e in (request.get_json(silent=True) or {}).get('events',[]):
         if e.get('type')!='message': continue
         m=e.get('message',{}); typ=m.get('type')
-        if typ not in ('text','image','file'): continue
+        if typ not in ('text','image','file','audio'): continue
         cid,uid=ids(e); nm=name(e); eid=e.get('webhookEventId') or m.get('id'); mid=m.get('id')
         remember_line_member(cid,uid,nm)
         qid=m.get('quotedMessageId')
+        voice_input=False
+        if typ=='audio':
+            rawvoice,voicemime=content(mid)
+            if not rawvoice:
+                reply(e.get('replyToken'),'音声を取得できなかったよ🧭');continue
+            try:
+                voice_text=transcribe(rawvoice,'voice.m4a',OPENAI_KEY,HTTP)
+            except Exception as x:
+                print('voice_transcribe',repr(x),flush=True);reply(e.get('replyToken'),'音声の文字起こしでエラーが出たよ🧭');continue
+            if not voice_text:
+                reply(e.get('replyToken'),'音声を聞き取れなかったよ🧭');continue
+            m=dict(m);m['text']=voice_text;typ='text';voice_input=True
         if typ in ('image','file'):
             rawmedia,mime=content(mid)
             if not rawmedia: continue
@@ -1456,7 +1532,7 @@ def webhook():
                 reply(e.get('replyToken'),received)
             continue
         text=m.get('text','')
-        save_msg(eid,cid,uid,nm,'user',text,'text',mid,qid)
+        save_msg(eid,cid,uid,nm,'user',text,'audio' if voice_input else 'text',mid,qid)
         if wants_image_generation(text):
             base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
             reply(e.get('replyToken'),'画像を作り始めたよ🧭 完成したらここに送るね。')
