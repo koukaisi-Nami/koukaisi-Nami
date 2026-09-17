@@ -7,6 +7,8 @@ from flask import Flask, request, abort, Response, render_template_string, send_
 from estimate_document import make_estimate_document, make_estimate_image
 from structured_estimate_runtime import generate_text as structured_estimate
 from owner_guard import can_self_improve
+from nami_frontier import model_for_task, reasoning_for_task, task_for_text
+from nami_openai_media import wants_image_generation, image_prompt, generate_image
 from nami_supervisor import route_intent, line_scope, wants_company_memory, needs_supervisor_review, reviewer_instructions
 
 app = Flask(__name__)
@@ -14,9 +16,11 @@ SECRET=os.getenv("LINE_CHANNEL_SECRET","")
 TOKEN=os.getenv("LINE_CHANNEL_ACCESS_TOKEN","")
 OPENAI_KEY=os.getenv("OPENAI_API_KEY","")
 DB_URL=os.getenv("DATABASE_URL","")
-MODEL=os.getenv("OPENAI_MODEL","gpt-5.6-luna")
+MODEL=os.getenv("OPENAI_MODEL") or model_for_task("chat")
 OA="https://api.openai.com/v1/responses"
 HTTP=requests.Session()
+GENERATED_IMAGE_CACHE={}
+GENERATED_IMAGE_TTL=900
 
 # LINE承認式の自己改善
 GITHUB_TOKEN=os.getenv("GITHUB_TOKEN","")
@@ -163,7 +167,7 @@ def group_attachments(items):
     source='\n\n'.join(f"【資料{i+1}】\n{x.get('analysis','')}" for i,x in enumerate(items))
     prompt="""募集図面の読取結果を物件単位に完全分離する。1枚の画像内に複数の募集図面がある場合も必ず全物件を分ける。別物件の金額を混ぜない。JSONのみで返す。形式: {\"properties\":[{\"name\":\"物件名\",\"room\":\"号室\",\"address\":\"住所\",\"analysis\":\"その物件だけの賃料・管理費・敷礼・保証料・保険・鍵・サポート・その他費用等\"}]}。物件名不明でも賃料や間取り等から別図面と判断できれば別要素にする。推測で金額を補わない。"""
     try:
-        payload={"model":MODEL,"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":source[:12000]}]}],"max_output_tokens":2200}
+        payload={"model":model_for_task("document",OPENAI_KEY,HTTP),"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":source[:12000]}]}],"max_output_tokens":2200}
         r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)
         if not r.ok:raise RuntimeError(f"split {r.status_code}")
         d=r.json(); raw=d.get("output_text","")
@@ -602,7 +606,7 @@ functionは渡された関数名だけ。変更不能なら空配列ではなく
     # Generation itself gets bounded retries. Empty/malformed output is not an immediate dead-end.
     for generation_attempt in range(1,4):
         extra=("\n【前回失敗】\n"+last if last else "")+("\n【レビュー/安全チェック指示】\n"+feedback if feedback else "")
-        payload={"model":MODEL,"instructions":instruction,"input":[{"role":"user","content":[{"type":"input_text","text":"【改修要求】\n"+req_text+extra+"\n\n【変更可能な関数だけ】\n"+selected}]}],"max_output_tokens":4000}
+        payload={"model":model_for_task("self_improvement",OPENAI_KEY,HTTP),"instructions":instruction,"input":[{"role":"user","content":[{"type":"input_text","text":"【改修要求】\n"+req_text+extra+"\n\n【変更可能な関数だけ】\n"+selected}]}],"max_output_tokens":4000}
         try:
             r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=150)
             if not r.ok:
@@ -652,7 +656,7 @@ def supervisor_review(req_text,current,candidate,attempt):
 秘密情報を要求/出力しない。問題がなければapprove。問題があればfixと具体的な修正指示を返す。
 JSONのみ: {"action":"approve|fix","feedback":"具体的な理由と修正指示"}。"""
     text=f"【要求】\n{req_text}\n【レビュー試行】{attempt}/3\n【候補コード（関連関数のみ）】\n{selected}"
-    payload={"model":MODEL,"instructions":instruction,"input":[{"role":"user","content":[{"type":"input_text","text":text}]}],"max_output_tokens":900}
+    payload={"model":model_for_task("code_review",OPENAI_KEY,HTTP),"instructions":instruction,"input":[{"role":"user","content":[{"type":"input_text","text":text}]}],"max_output_tokens":900}
     r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)
     if not r.ok: raise RuntimeError(f"supervisor review failed {r.status_code}")
     d=r.json(); out=d.get("output_text","")
@@ -776,7 +780,7 @@ chat: その他。
 「俺のこと船長って呼んで」「このグループではキャプテンと呼んで」はmemory。
 出力は self_improve / memory / ask / chat のどれか1語のみ。"""
     try:
-        payload={"model":MODEL,"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":t[:1500]}]}],"max_output_tokens":20}
+        payload={"model":model_for_task("chat",OPENAI_KEY,HTTP),"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":t[:1500]}]}],"max_output_tokens":20}
         r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=30)
         if not r.ok: return "chat"
         d=r.json(); raw=(d.get("output_text") or "").strip().lower()
@@ -857,7 +861,7 @@ def media_ai(blob,mime,uid,cid,question=""):
     q=(question or "").strip() or "この資料を詳細に読み取ってください。"
     if mime and "pdf" in mime.lower():
         parts=[{"type":"input_text","text":ctx(uid,cid,q)+"\n【今回】\n"+q[:3000]}, {"type":"input_file","filename":"document.pdf","file_data":"data:application/pdf;base64,"+base64.b64encode(blob).decode()}]
-        payload={"model":MODEL,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":1200}
+        payload={"model":model_for_task("document",OPENAI_KEY,HTTP),"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":1200}
         try:
             r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=150)
             if not r.ok: print("OPENAI_MEDIA",r.status_code,r.text[:2000],flush=True); return f"PDF解析エラー({r.status_code})"
@@ -898,15 +902,7 @@ def ctx(uid,cid,query="",extra=""):
     h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x[:700]}" for r,n,x in history(cid))
     m="\n".join(f"- [{s}/{cat}/{sub}] {x[:700]}" for s,cat,sub,x in mems(uid,cid,query))
     sk="\n".join(f"- 【{n}】{x[:900]}" for n,x in skill_rows(query))
-    safety=(
-        "【コード改善PRの安全手順】\n"
-        "コード改善PRを作成する場合は、作成後に上位AIによる自動レビューを実施する。"
-        "問題があれば修正して再テストし、問題がなくなるまで最大3回まで繰り返す。"
-        "テストがすべて成功しても、mainへのマージや本番反映は行わず、最後にユーザーへ"
-        "『反映していい？』と確認する。ユーザーが明示的に『反映して』と言うまで、"
-        "マージ・デプロイ・本番反映を絶対に実行しない。既存機能、記憶、DBデータは保持し、"
-        "秘密情報をコードへ埋め込まず、DB変更は後方互換なALTER/CREATE IF NOT EXISTSのみ使用する。"
-    )
+    safety=""
     return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{safety}\n{extra}"
 
 def format_retry(text):
@@ -926,9 +922,20 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
     needs_web=bool(re.search(r"(最新|今日|現在|ニュース|天気|相場|営業時間|公式|検索して|調べて|web|ネット)",text or "",re.I))
-    payload={"model":MODEL,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":900}
+    runtime_task=task_for_text(text)
+    if img: runtime_task="vision"
+    elif needs_web and runtime_task=="chat": runtime_task="web"
+    runtime_model=model_for_task(runtime_task,OPENAI_KEY,HTTP)
+    runtime_reasoning=reasoning_for_task(runtime_task)
+    payload={"model":runtime_model,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":900}
+    if runtime_reasoning != "none":
+        payload["reasoning"]={"effort":runtime_reasoning}
     if needs_web:
         payload["tools"]=[{"type":"web_search"}]
+        payload["tool_choice"]="auto"
+    vector_store=os.getenv("OPENAI_VECTOR_STORE_ID","").strip()
+    if vector_store and runtime_task in ("knowledge","document","balanced"):
+        payload.setdefault("tools",[]).append({"type":"file_search","vector_store_ids":[vector_store]})
         payload["tool_choice"]="auto"
     try:
         r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=90)
@@ -1089,7 +1096,7 @@ def manager_review(text,uid,cid):
 speak=trueはseverity 4以上だけ。messageは事実→理由→具体的な次アクションを120文字程度で。
 """
     try:
-        payload={"model":MODEL,"instructions":prompt,
+        payload={"model":model_for_task("manager",OPENAI_KEY,HTTP),"instructions":prompt,
                  "input":[{"role":"user","content":[{"type":"input_text",
                  "text":ctx(uid,cid)+"\n【今回の発言】\n"+text}]}]}
         r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
@@ -1383,6 +1390,39 @@ def reply_estimate_artifact(tok,base,key,marker):
         return r.ok
     except Exception as x: print("reply_estimate_artifact",repr(x),flush=True); return False
 
+def push_generated_image(target,url,caption=""):
+    msgs=[{"type":"image","originalContentUrl":url,"previewImageUrl":url}]
+    if caption: msgs.append({"type":"text","text":caption[:4900]})
+    try:
+        r=HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},json={"to":target,"messages":msgs[:5]},timeout=25)
+        if not r.ok: print("LINE generated image",r.status_code,r.text[:1000],flush=True)
+        return r.ok
+    except Exception as x:
+        print("push_generated_image",repr(x),flush=True); return False
+
+@app.get("/generated-image/<key>.png")
+def generated_image_file(key):
+    row=GENERATED_IMAGE_CACHE.get(key)
+    if not row:return "not found",404
+    created,blob=row
+    if time.time()-created>GENERATED_IMAGE_TTL:
+        GENERATED_IMAGE_CACHE.pop(key,None); return "expired",404
+    return Response(blob,mimetype="image/png",headers={"Cache-Control":"public, max-age=600"})
+
+def start_frontier_image_generation(cid,target,prompt,base):
+    def worker():
+        try:
+            blob=generate_image(prompt,OPENAI_KEY,HTTP)
+            key=hashlib.sha256((cid+str(time.time())+prompt[:200]).encode()).hexdigest()[:28]
+            GENERATED_IMAGE_CACHE[key]=(time.time(),blob)
+            url=f"{base}/generated-image/{key}.png"
+            push_generated_image(target,url,"画像できたよ🧭")
+            save_msg("imagegen:"+key,cid,"bot","航海士ナミ","assistant","[生成画像] "+prompt[:500])
+        except Exception as x:
+            print("frontier_image_generation",repr(x),flush=True)
+            push_line(target,"画像生成でエラーが出たよ。既存機能には影響していないよ。")
+    threading.Thread(target=worker,daemon=True,name="nami-image-gen").start()
+
 @app.get("/")
 def health():return "航海士ナミ FINAL 部長モード OK",200
 
@@ -1417,6 +1457,11 @@ def webhook():
             continue
         text=m.get('text','')
         save_msg(eid,cid,uid,nm,'user',text,'text',mid,qid)
+        if wants_image_generation(text):
+            base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
+            reply(e.get('replyToken'),'画像を作り始めたよ🧭 完成したらここに送るね。')
+            start_frontier_image_generation(cid,line_target(e),image_prompt(text),base)
+            continue
         if (text or '').strip()=='おやすみ':
             ans='おやすみ船長🌙'
             save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',ans)
