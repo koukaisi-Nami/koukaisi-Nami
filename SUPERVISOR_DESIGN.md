@@ -20,6 +20,6 @@ Goal: the captain can teach Nami in ordinary LINE conversation without deciding 
 Code changes continue to use PRs. Merge remains owner-only and requires the captain's explicit approval phrase. Reviewer recommendations do not bypass this gate.
 
 ## Rollout
-Phase 1 (this PR): pure routing/scope helpers + regression tests, no production memory mutation.
+Phase 1: pure routing/scope helpers + regression tests, no production memory mutation.
 Phase 2: wire helpers into `app.py` webhook before `learn_important`, pass source scope to explicit learning, and add reviewer AI call.
 Phase 3: add reviewer audit records, confidence/correction metrics, and production health/rollback checks.
