@@ -1,0 +1,30 @@
+name: Apply media reply patch
+on:
+  push:
+    branches: [chapi-media-reply-fix]
+    paths: [patch_media_reply.py]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-media-reply-fix
+      - name: Apply patch
+        run: python patch_media_reply.py
+      - name: Validate
+        run: |
+          python -m py_compile app.py
+          grep -q 'quoted_blob,quoted_mime=content(qid)' app.py
+          grep -q 'is_quoted_pdf=' app.py
+          grep -q 'question=text' app.py
+      - name: Commit app only
+        run: |
+          git config user.name 'Chapi'
+          git config user.email 'actions@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Support replies to quoted images and PDFs'
+          git push origin HEAD:chapi-media-reply-fix
