@@ -189,8 +189,39 @@ def group_attachments(items):
 
 def is_batch_estimate_command(text):
     t=text or ''
-    batch_word=r"(?:まとめて|一括|全部|複数|[0-9０-９一二三四五六七八九十]+\s*(?:件|物件)(?:分)?)"
+    batch_word=r"(?:まとめて|一括|全部|全て|すべて|全物件|複数|[0-9０-９一二三四五六七八九十]+\s*(?:件|物件)(?:分)?)"
     return bool(re.search(batch_word+r".*(?:見積|初期費用)|(?:見積|初期費用).*"+batch_word,t,re.I))
+
+def batch_artifact_marker(text):
+    t=text or ''
+    wants_image=bool(re.search(r"(?:画像|写真|PNG|イメージ)",t,re.I))
+    wants_pdf=bool(re.search(r"PDF",t,re.I))
+    if wants_image and wants_pdf:return "__ESTIMATE_BOTH__"
+    if wants_pdf:return "__ESTIMATE_PDF__"
+    if wants_image:return "__ESTIMATE_IMAGE__"
+    return None
+
+def send_batch_estimate_artifacts(reply_token,target,estimates,base,marker):
+    if not estimates:return
+    first_messages=[]
+    for i,estimate_text in enumerate(estimates):
+        key=hashlib.sha256((str(time.time())+str(i)+estimate_text).encode()).hexdigest()[:24]
+        ESTIMATE_CACHE[key]=(time.time(),estimate_text)
+        image_url=f"{base}/estimate-file/{key}.png"
+        pdf_url=f"{base}/estimate-file/{key}.pdf"
+        msgs=[]
+        if marker in ("__ESTIMATE_IMAGE__","__ESTIMATE_BOTH__"):
+            msgs.append({"type":"image","originalContentUrl":image_url,"previewImageUrl":image_url})
+        if marker in ("__ESTIMATE_PDF__","__ESTIMATE_BOTH__"):
+            msgs.append({"type":"text","text":"見積もり概算書PDFはこちら\n"+pdf_url})
+        if i==0:first_messages.extend(msgs)
+        else:
+            for msg in msgs:
+                try:HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"to":target,"messages":[msg]},timeout=20)
+                except Exception as x:print("batch_artifact_push",repr(x),flush=True)
+    if first_messages:
+        try:HTTP.post("https://api.line.me/v2/bot/message/reply",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"replyToken":reply_token,"messages":first_messages[:5]},timeout=20)
+        except Exception as x:print("batch_artifact_reply",repr(x),flush=True)
 
 def line_target(e):
     src=e.get("source",{})
@@ -1295,15 +1326,20 @@ def webhook():
                     extra=f"\n【参照資料の解析】\n{chosen}" if chosen else ""
                     ans=ai(text,uid,cid,extra=extra)
 
+        batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None
+        if batch_marker and isinstance(batch_answer,list):
+            base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')
+            saved_ans="\n\n".join(batch_answer)
+            save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
+            send_batch_estimate_artifacts(e.get("replyToken"),line_target(e),batch_answer,base,batch_marker)
+            continue
         saved_ans="\n\n".join(ans) if isinstance(ans,(list,tuple)) else ans
         save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
         if isinstance(ans,list):
-            # LINE reply is capped at 5 messages. Reply with the first batch, then push the rest one by one.
-            first=ans[:5]
-            reply(e.get("replyToken"),first)
             target=line_target(e)
-            for item in ans[5:]:
-                push_line(target,item)
+            if ans:
+                reply(e.get("replyToken"),ans[0])
+                for item in ans[1:]:push_line(target,item)
         else:
             reply(e.get("replyToken"),ans)
     return "OK",200
