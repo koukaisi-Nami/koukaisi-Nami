@@ -1,0 +1,43 @@
+name: Apply speed optimization
+on:
+  push:
+    branches: [chapi-speed-optimization]
+    paths: [patch_speed_optimization.py, patch_estimate_consistency.py, estimate_document.py, .github/workflows/apply-speed-optimization.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: chapi-speed-optimization}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt
+      - run: python patch_speed_optimization.py
+      - run: python patch_estimate_consistency.py
+      - run: python -m py_compile app.py estimate_document.py
+      - name: Estimate artifact regression test
+        run: |
+          python - <<'PY'
+          from estimate_document import parse_customer_estimate,make_estimate_document,make_estimate_image
+          t='''【初期費用概算】\nALTERNA銀座 904号室\n\n当月前家賃：137,806円\n次月前家賃：267,000円\n敷金：－\n礼金：－\n初回保証料（仮）：133,500円\n仲介手数料：146,850円\n火災保険：28,000円\n24時間サポート：16,500円\n鍵交換：24,200円\n事務手数料：3,300円\n\n合計：757,156円\n※入居日15日で計算。仲介手数料は0.5ヶ月＋税。'''
+          d=parse_customer_estimate(t)
+          assert d['property']=='ALTERNA銀座 904号室'
+          assert d['total']==757156
+          vals={x[0]:x[2] for x in d['items']}
+          assert vals['当月前家賃']==137806 and vals['仲介手数料']==146850
+          pdf=make_estimate_document(t).getvalue(); png=make_estimate_image(t).getvalue()
+          assert pdf[:4]==b'%PDF' and png[:8]==b'\x89PNG\r\n\x1a\n'
+          PY
+      - name: Verify LINE artifact behavior
+        run: |
+          grep -q 'type":"image"' app.py
+          grep -q '見積もり概算書PDFはこちら' app.py
+          grep -q 'single_estimate_prompt(clean)' app.py
+      - run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Apply Nami speed and estimate consistency fixes'
+          git push
