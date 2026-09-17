@@ -27,7 +27,16 @@ jobs:
       - name: Run estimate regression tests
         run: |
           pip install reportlab pymupdf psycopg[binary] flask requests
-          python -m unittest tests.test_estimate_model tests.test_estimate_renderer tests.test_structured_estimate_runtime -v
+          python -m unittest tests.test_estimate_model tests.test_estimate_renderer -v
+          python - <<'PY'
+          from structured_estimate_runtime import generate_text
+          def fake_ai(prompt, uid, cid):
+              return '{"property":"TEST 101","move_in":"15日","items":[{"key":"current_rent","label":"当月前家賃","amount":50000,"breakdown":"日割り16日分"},{"key":"brokerage","label":"仲介手数料","original_amount":110000,"discount_amount":55000,"amount":55000,"breakdown":"半額"}],"notes":[]}'
+          data,text=generate_text(fake_ai,'15日入居、仲介半額','募集図面', 'u','c','TEST 101')
+          assert data['total']==105000
+          assert '日割り16日分' in text
+          assert '割引55,000円' in text
+          PY
       - name: Commit actual app.py
         run: |
           git config user.name 'github-actions[bot]'
