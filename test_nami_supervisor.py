@@ -1,4 +1,4 @@
-from nami_supervisor import route_intent, line_scope, wants_company_memory
+from nami_supervisor import route_intent, line_scope, wants_company_memory, needs_supervisor_review, reviewer_instructions
 
 
 def test_owner_fix_is_self_improvement_even_with_memory_words():
@@ -25,3 +25,15 @@ def test_room_uses_real_room_id():
 def test_company_requires_explicit_memory_action():
     assert wants_company_memory("会社共通ルールとしてこれを覚えて")
     assert not wants_company_memory("個人・グループ・会社共通の記憶を分離するコードを直して")
+
+
+def test_correction_triggers_reviewer():
+    assert needs_supervisor_review("ナミ、これ違くない？")
+    assert needs_supervisor_review("これ合ってる？")
+    assert not needs_supervisor_review("今日の予定教えて")
+
+
+def test_reviewer_contract_keeps_merge_and_company_memory_safe():
+    contract = reviewer_instructions()
+    assert "コードを直接マージしない" in contract
+    assert "会社記憶" in contract
