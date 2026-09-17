@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run deterministic safety tests
-        run: python -m unittest tests/test_nami_safety.py
-      - name: Compile safety kernel
-        run: python -m py_compile nami_safety.py
+      - name: Run deterministic safety and router tests
+        run: python -m unittest tests/test_nami_safety.py tests/test_nami_router.py
+      - name: Compile safety and router modules
+        run: python -m py_compile nami_safety.py nami_router.py
