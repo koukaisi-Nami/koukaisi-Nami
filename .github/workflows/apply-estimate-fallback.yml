@@ -15,6 +15,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install renderer dependencies
+        run: pip install reportlab pillow
       - name: Apply routing patch
         run: python scripts/patch_estimate_fallback.py
       - name: Syntax and estimate regression
