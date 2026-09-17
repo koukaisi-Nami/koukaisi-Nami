@@ -1,0 +1,33 @@
+name: Nami safety kernel
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [chapi/nami-2-upgrade]
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run deterministic Nami 3.0 tests
+        run: >-
+          python -m unittest
+          tests/test_nami_safety.py
+          tests/test_nami_router.py
+          tests/test_nami_evolution.py
+          tests/test_nami_model_policy.py
+          tests/test_nami_context_budget.py
+          tests/test_nami_multimodal.py
+      - name: Compile Nami 3.0 policy modules
+        run: >-
+          python -m py_compile
+          nami_safety.py
+          nami_router.py
+          nami_evolution.py
+          nami_update_manifest.py
+          nami_model_policy.py
+          nami_context_budget.py
+          nami_multimodal.py
