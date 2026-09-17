@@ -3,7 +3,7 @@ on:
   pull_request:
     paths:
       - 'multi_property_estimate.py'
-      - 'tests/test_estimate_aliases.py'
+      - 'tests/run_alias_test.py'
   push:
     branches: [chapi-insurance-detection-fix]
 jobs:
@@ -15,4 +15,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m py_compile multi_property_estimate.py
-      - run: python tests/test_estimate_aliases.py
+      - run: python tests/run_alias_test.py
