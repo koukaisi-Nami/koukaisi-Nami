@@ -1258,23 +1258,23 @@ def webhook():
             reminder_created=create_member_reminder(cid,line_target(e),uid,assignee,steps,interval)
         quick_task=task_command(text,uid,cid)
         quick_doc=three_document_command(text,uid,cid,qid)
-        # Safety net: a recent listing + estimate intent must never fall through to free-form chat.
-        # This also covers natural requests such as 「この物件15日入居、仲介半額で画像にして」.
-        estimate_intent=bool(re.search(r"(見積|初期費用|入居.{0,8}(?:日|月)|仲介.{0,8}(?:半額|無料|割引)|(?:画像|PNG|PDF).{0,12}(?:にして|で|出して|作って))",text,re.I))
-        wants_estimate_artifact=bool(re.search(r"(画像|PNG|PDF)",text,re.I))
-        if not quick_doc and estimate_intent:
+        # Estimate is a tool, never a free-form chat answer. Force it after legacy parsing so
+        # an older document route cannot preempt the canonical estimate engine.
+        estimate_intent=bool(re.search(r"(見積|初期費用)",text,re.I) or (re.search(r"仲介.{0,8}(?:半額|無料|割引)",text,re.I) and re.search(r"(画像|PNG|PDF|作って|出して)",text,re.I)))
+        if estimate_intent:
             latest_material=image_analysis(cid,qid) if qid else image_analysis(cid)
             if latest_material:
                 try:
                     estimate_data,estimate_text=structured_estimate(ai,text,latest_material,uid,cid)
-                    if wants_estimate_artifact:
-                        wants_image=bool(re.search(r"(画像|PNG)",text,re.I)); wants_pdf=bool(re.search(r"PDF",text,re.I))
-                        marker="__ESTIMATE_BOTH__" if wants_image and wants_pdf else ("__ESTIMATE_PDF__" if wants_pdf else "__ESTIMATE_IMAGE__")
-                        quick_doc=(marker,estimate_data,estimate_text)
-                    else:
-                        quick_doc=estimate_text
+                    wants_image=bool(re.search(r"(画像|PNG|写真)",text,re.I))
+                    wants_pdf=bool(re.search(r"PDF",text,re.I))
+                    marker="__ESTIMATE_BOTH__" if wants_image and wants_pdf else ("__ESTIMATE_PDF__" if wants_pdf else ("__ESTIMATE_IMAGE__" if wants_image else None))
+                    quick_doc=(marker,estimate_data,estimate_text) if marker else estimate_text
                 except Exception as x:
-                    print("structured_estimate_fallback",repr(x),flush=True)
+                    print("structured_estimate_forced",repr(x),flush=True)
+                    quick_doc="見積データの生成でエラーが出た。通常チャットでは代替せず停止したよ。"
+            else:
+                quick_doc="見積書を作る募集図面・PDF・文面が見つからないよ。資料を送ってから見積を指示してね。"
         awaiting=latest_awaiting(cid,uid)
         if batch_answer:
             ans=batch_answer
