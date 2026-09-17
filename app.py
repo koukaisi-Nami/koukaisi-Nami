@@ -2,6 +2,7 @@ import os, re, json, base64, hashlib, hmac, requests, psycopg, ast, time, thread
 from io import BytesIO
 from datetime import datetime, timedelta
 from functools import wraps
+from intent_router import should_create_reminder, reminder_has_enough_context
 from flask import Flask, request, abort, Response, render_template_string, send_file
 
 app = Flask(__name__)
@@ -1009,9 +1010,9 @@ def webhook():
             continue
 
         reminder_done=complete_member_reminder(cid,text)
-        member_task=parse_member_task(text)
+        member_task=parse_member_task(text) if should_create_reminder(text) else None
         reminder_created=None
-        if member_task:
+        if member_task and reminder_has_enough_context(text):
             assignee,steps,interval=member_task
             reminder_created=create_member_reminder(cid,line_target(e),uid,assignee,steps,interval)
         quick_task=task_command(text,uid,cid)
