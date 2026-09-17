@@ -154,8 +154,43 @@ def clear_estimate_batch(cid):
             cn.commit()
     except Exception as x:print("estimate_batch_clear",repr(x),flush=True)
 
+def group_attachments(items):
+    """Split saved analyses into individual properties, including several sheets inside one image."""
+    if not items:return [],True
+    source='\n\n'.join(f"【資料{i+1}】\n{x.get('analysis','')}" for i,x in enumerate(items))
+    prompt="""募集図面の読取結果を物件単位に完全分離する。1枚の画像内に複数の募集図面がある場合も必ず全物件を分ける。別物件の金額を混ぜない。JSONのみで返す。形式: {\"properties\":[{\"name\":\"物件名\",\"room\":\"号室\",\"address\":\"住所\",\"analysis\":\"その物件だけの賃料・管理費・敷礼・保証料・保険・鍵・サポート・その他費用等\"}]}。物件名不明でも賃料や間取り等から別図面と判断できれば別要素にする。推測で金額を補わない。"""
+    try:
+        payload={"model":MODEL,"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":source[:12000]}]}],"max_output_tokens":2200}
+        r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)
+        if not r.ok:raise RuntimeError(f"split {r.status_code}")
+        d=r.json(); raw=d.get("output_text","")
+        if not raw:
+            vals=[]
+            for out in d.get("output",[]):
+                if out.get("type")=="message":
+                    for z in out.get("content",[]):
+                        if z.get("type") in ("output_text","text") and z.get("text"):vals.append(z["text"])
+            raw='\n'.join(vals)
+        raw=re.sub(r"^```(?:json)?\s*|\s*```$","",raw.strip())
+        props=json.loads(raw).get("properties",[])
+        groups=[]
+        for prop in props:
+            analysis=(prop.get("analysis") or '').strip()
+            if not analysis:continue
+            groups.append({"property":{"name":prop.get("name",''),"room":prop.get("room",''),"address":prop.get("address",'')},"attachments":[{"analysis":analysis}]})
+        return groups,(len(groups)==0)
+    except Exception as x:
+        print("group_attachments",repr(x),flush=True)
+        # Safe fallback: treat each uploaded attachment independently rather than mixing them.
+        groups=[]
+        for i,item in enumerate(items,1):
+            groups.append({"property":{"name":f"{i}件目","room":"","address":""},"attachments":[item]})
+        return groups,False
+
 def is_batch_estimate_command(text):
-    return bool(re.search(r"(まとめて|一括|全部|複数).*(見積|初期費用)|(見積|初期費用).*(まとめて|一括|全部|複数)",(text or ''),re.I))
+    t=text or ''
+    batch_word=r"(?:まとめて|一括|全部|複数|[0-9０-９一二三四五六七八九十]+\s*(?:件|物件)(?:分)?)"
+    return bool(re.search(batch_word+r".*(?:見積|初期費用)|(?:見積|初期費用).*"+batch_word,t,re.I))
 
 def line_target(e):
     src=e.get("source",{})
@@ -759,8 +794,8 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
     except Exception as x:print("ai",repr(x),flush=True);return "AI接続エラー"
 
 def analyze(img,mime,uid,cid,question=""):
-    prompt="""資料を高精度で詳細に解析。小さい文字・表・注記も確認する。
-賃貸募集図面なら物件名、号室、所在地、交通、間取り、面積、賃料、管理費、敷金、礼金、保証金、契約期間、保証会社、初回/月額保証料、火災保険、損保、損害保険、家財保険、住宅保険、借家人賠償責任保険、少額短期保険、保険料、鍵交換、24時間/安心/緊急サポート、クリーニング、その他初期/月額費用、入居日、設備、特約、AD等を抽出。保険は名称が火災保険でなくても住宅・家財・借家人賠償に関する記載と金額を必ず拾う。
+    prompt="""資料を高精度で詳細に解析。小さい文字・表・注記も確認する。画像内に複数の募集図面・複数物件が写っている場合は、1件だけ選ばず全物件をそれぞれ独立して読み取り、物件ごとに明確に分ける。別物件の金額・条件を絶対に混ぜない。
+賃貸募集図面なら各物件について物件名、号室、所在地、交通、間取り、面積、賃料、管理費、敷金、礼金、保証金、契約期間、保証会社、初回/月額保証料、火災保険、損保、損害保険、家財保険、住宅保険、借家人賠償責任保険、少額短期保険、保険料、鍵交換、24時間/安心/緊急サポート、クリーニング、その他初期/月額費用、入居日、設備、特約、AD等を抽出。保険は名称が火災保険でなくても住宅・家財・借家人賠償に関する記載と金額を必ず拾う。
 見積に使える金額を項目別に構造化し、必須/任意・税込/税別も分かる範囲で区別。数字は推測しない。不鮮明・未記載は必ず「要確認」。"""
     if question:
         prompt += "\nユーザーの質問を最優先して答える: "+question[:1500]
