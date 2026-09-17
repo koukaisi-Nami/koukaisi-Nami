@@ -1,0 +1,32 @@
+name: Apply estimate document
+on:
+  push:
+    branches: [chapi-estimate-pdf-document]
+    paths: [patch_estimate_document.py, estimate_document.py, .github/workflows/apply-estimate-document.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: chapi-estimate-pdf-document}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt
+      - run: python patch_estimate_document.py
+      - run: python -m py_compile app.py estimate_document.py
+      - name: PDF smoke test
+        run: |
+          python - <<'PY'
+          from estimate_document import make_estimate_document
+          t='''【初期費用概算】\nテストマンション 101号室\n\n当月前家賃：－\n次月前家賃：120,000円\n敷金：120,000円\n礼金：120,000円\n初回保証料（仮）：60,000円\n仲介手数料：－\n火災保険（仮）：20,000円\n24時間サポート：－\n鍵交換：24,200円\n事務手数料：－\n\n合計：464,200円\n※入居日・未確定項目により金額が変動します。'''
+          b=make_estimate_document(t).getvalue()
+          assert b[:4]==b'%PDF' and len(b)>1000
+          PY
+      - run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Wire customer estimate PDF into LINE flow'
+          git push
