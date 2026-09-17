@@ -2,6 +2,8 @@
 
 この仕様は既存の見積書デザイン・項目・図面抽出を壊さず拡張するための受入基準。
 
+> Production deploy trigger: canonical estimate runtime / 2026-09-17
+
 ## 基準デザイン
 既存 `estimate_document.py` の「見積もり概算書」を標準とする。項目・金額・合計・Steer Ship株式会社表記を維持する。
 
