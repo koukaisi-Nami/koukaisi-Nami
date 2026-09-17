@@ -19,6 +19,9 @@ GITHUB_BRANCH=os.getenv("GITHUB_BRANCH","main")
 GITHUB_APP_PATH=os.getenv("GITHUB_APP_PATH","app.py")
 SELF_IMPROVE=os.getenv("SELF_IMPROVE","false").lower()=="true"
 DASHBOARD_PASSWORD=os.getenv("NAMI_DASHBOARD_PASSWORD","")
+CHAT_HISTORY_COUNT=10
+MEMORY_CONTEXT_COUNT=8
+SKILL_CONTEXT_COUNT=5
 
 def db(): return psycopg.connect(DB_URL)
 
@@ -92,6 +95,15 @@ def init_db():
               id BIGSERIAL PRIMARY KEY,case_id BIGINT REFERENCES cases(id) ON DELETE CASCADE,
               title TEXT NOT NULL,status TEXT DEFAULT 'open',due_date DATE,
               created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            # Preserve legacy task rows while making task actions available in LINE.
+            c.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS conversation_id TEXT")
+            c.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS user_id TEXT")
+            c.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_date DATE")
+            c.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'open'")
+            c.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
+            c.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+            c.execute("""CREATE TABLE IF NOT EXISTS manager_review_state(
+              conversation_id TEXT PRIMARY KEY,last_checked_at TIMESTAMPTZ DEFAULT NOW())""")
             c.execute("CREATE INDEX IF NOT EXISTS cases_updated_idx ON cases(updated_at DESC)")
             c.execute("CREATE INDEX IF NOT EXISTS tasks_open_idx ON tasks(status,due_date)")
         cn.commit()
@@ -131,7 +143,7 @@ def image_analysis(cid,mid=None):
                 return r[0] if r else None
     except Exception as x: print("image_analysis",repr(x),flush=True); return None
 
-def history(cid,n=25):
+def history(cid,n=CHAT_HISTORY_COUNT):
     try:
         with db() as cn:
             with cn.cursor() as c:
@@ -154,14 +166,30 @@ def add_memory(scope,sid,cat,subject,content,uid):
             cn.commit()
     except Exception as x: print("add_memory",repr(x),flush=True)
 
-def mems(uid,cid):
+def memory_terms(text):
+    raw=(text or "").lower(); terms=[]
+    for word in re.findall(r"[a-z0-9_-]{2,}|[ぁ-んァ-ヶ一-龠]{2,}",raw):
+        if word not in ("これ","それ","あれ","こと","ため","ので","です","ます","ナミ"): terms.append(word[:40])
+    for word in ("見積","請求","物件","賃貸","入居","申込","審査","契約","鍵","保証","家賃","タスク","顧客","追客","図面","写真","会社"):
+        if word in raw: terms.append(word)
+    return list(dict.fromkeys(terms))[:12]
+
+def mems(uid,cid,query="",limit=MEMORY_CONTEXT_COUNT):
+    """All memories remain stored; this ranks the small working set for one reply."""
     try:
         with db() as cn:
             with cn.cursor() as c:
                 c.execute("""SELECT scope,category,subject,content FROM memories WHERE
                 (scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s)
                 OR (scope='company' AND scope_id='company')
-                ORDER BY updated_at DESC LIMIT 40""",(uid,cid)); return c.fetchall()
+                ORDER BY updated_at DESC LIMIT 160""",(uid,cid)); rows=c.fetchall()
+        terms=memory_terms(query)
+        def score(row):
+            scope,category,subject,content=row; hay=(str(category)+" "+str(subject)+" "+str(content)).lower()
+            hits=sum(8 if term in (subject or "").lower() else 3 for term in terms if term in hay)
+            return hits+{"conversation":2,"user":1,"company":0}.get(scope,0)
+        ranked=sorted(rows,key=score,reverse=True); relevant=[r for r in ranked if score(r)>2]
+        return (relevant+[r for r in ranked if r not in relevant])[:limit]
     except:return []
 
 def add_skill(name,body,uid):
@@ -173,12 +201,14 @@ def add_skill(name,body,uid):
             cn.commit()
     except Exception as x: print("skill",repr(x),flush=True)
 
-def skill_rows():
+def skill_rows(query="",limit=SKILL_CONTEXT_COUNT):
     try:
         with db() as cn:
             with cn.cursor() as c:
-                c.execute("SELECT name,instructions FROM skills WHERE scope='company' ORDER BY updated_at DESC LIMIT 30")
-                return c.fetchall()
+                c.execute("SELECT name,instructions FROM skills WHERE scope='company' ORDER BY updated_at DESC LIMIT 80")
+                rows=c.fetchall()
+        terms=memory_terms(query)
+        return sorted(rows,key=lambda row:sum(5 for term in terms if term in (row[0]+" "+row[1]).lower()),reverse=True)[:limit]
     except:return []
 
 
@@ -449,17 +479,24 @@ SYSTEM="""あなたは航海士ナミ。優秀な日本の不動産賃貸仲介�
 過去の成約/失注/顧客反応から再利用できる知見は業務学習候補として扱う。
 新機能が有効そうなら提案はできるが、本番コードの変更は必ず承認フローを通す。"""
 
-def ctx(uid,cid,extra=""):
-    h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x}" for r,n,x in history(cid))
-    m="\n".join(f"- [{s}/{cat}/{sub}] {x}" for s,cat,sub,x in mems(uid,cid))
-    sk="\n".join(f"- 【{n}】{x}" for n,x in skill_rows())
+def ctx(uid,cid,query="",extra=""):
+    # The complete record stays in PostgreSQL; only relevant context enters this request.
+    h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x[:700]}" for r,n,x in history(cid))
+    m="\n".join(f"- [{s}/{cat}/{sub}] {x[:700]}" for s,cat,sub,x in mems(uid,cid,query))
+    sk="\n".join(f"- 【{n}】{x[:900]}" for n,x in skill_rows(query))
     return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{extra}"
 
+def format_retry(text):
+    m=re.search(r"try again in\s+([0-9]+)m(?:([0-9.]+)s)?",text or "",re.I)
+    if m:return f"約{m.group(1)}分"
+    m=re.search(r"try again in\s+([0-9.]+)s",text or "",re.I)
+    return f"約{max(1,round(float(m.group(1))))}秒" if m else "少し"
+
 def ai(text,uid,cid,img=None,mime=None,extra=""):
-    parts=[{"type":"input_text","text":ctx(uid,cid,extra)+"\n【今回】\n"+text}]
+    parts=[{"type":"input_text","text":ctx(uid,cid,text,extra)+"\n【今回】\n"+text[:4000]}]
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
-    payload={"model":MODEL,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],
+    payload={"model":MODEL,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":900,
              "tools":[{"type":"web_search"}],"tool_choice":"auto"}
     try:
         r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
@@ -467,9 +504,7 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         if not r.ok:
             print("OPENAI",r.status_code,r.text,flush=True)
             if r.status_code==429:
-                retry=re.search(r"try again in ([0-9.]+[sm][0-9.sm]*)",r.text,re.I)
-                wait=retry.group(1) if retry else "少し"
-                return f"AIが混み合ってるよ🧭 {wait}後にもう一度送って。"
+                return f"AIが混み合ってるよ🧭 上限回復まで{format_retry(r.text)}。少し時間をあけてもう一度送って。"
             return f"AIエラー({r.status_code})"
         d=r.json()
         if d.get("output_text"):return d["output_text"].strip()
@@ -507,6 +542,21 @@ def save_manager_insight(cid,uid,itype,severity,summary):
             cn.commit()
     except Exception as x: print("manager_insight",repr(x),flush=True)
 
+def manager_review_allowed(cid):
+    """Avoid a second AI request for every uncalled group message."""
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("SELECT last_checked_at < NOW() - INTERVAL '20 minutes' FROM manager_review_state WHERE conversation_id=%s",(cid,))
+                row=c.fetchone()
+                if row and not row[0]: return False
+                c.execute("""INSERT INTO manager_review_state(conversation_id,last_checked_at) VALUES(%s,NOW())
+                ON CONFLICT(conversation_id) DO UPDATE SET last_checked_at=EXCLUDED.last_checked_at""",(cid,))
+            cn.commit()
+        return True
+    except Exception as x:
+        print("manager_review_allowed",repr(x),flush=True); return False
+
 def manager_review(text,uid,cid):
     """Return a proactive message only for high-value intervention; otherwise None."""
     if not OPENAI_KEY or len((text or "").strip()) < 4:
@@ -517,6 +567,8 @@ def manager_review(text,uid,cid):
         r"仲介|鍵|保険|追客|連絡|顧客|お客様|さん|空室|キャンセル|重説|必要書類|法人契約)",
         text, re.I)
     if not trigger:
+        return None
+    if not manager_review_allowed(cid):
         return None
 
     prompt = """あなたは不動産賃貸仲介会社の営業部長。
@@ -569,6 +621,43 @@ def explicit_learning(text,uid):
     m=re.search(r"(.+?)って覚えて(?:おいて)?[！!。.]?$",t,re.S)
     if m:
         add_memory("user",uid,"general","",m.group(1),uid);return f"覚えたよ🧭\n「{m.group(1)}」"
+    return None
+
+def task_command(text,uid,cid):
+    """Task commands stay fast because they do not invoke the AI."""
+    clean=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",(text or "").strip(),flags=re.I)
+    add=re.match(r"(?:タスク(?:を)?追加|タスク追加|やること追加)[：:\s]+(.+)",clean,re.S)
+    if add:
+        title=add.group(1).strip()[:500]
+        if not title:return "タスクの内容を送って。例：ナミ タスク追加：田町の管理会社へ空室確認"
+        try:
+            with db() as cn:
+                with cn.cursor() as c:
+                    c.execute("INSERT INTO tasks(title,conversation_id,user_id) VALUES(%s,%s,%s) RETURNING id",(title,cid,uid)); tid=c.fetchone()[0]
+                cn.commit()
+            return f"タスクを登録したよ🧭 #{tid} {title}"
+        except Exception as x:
+            print("task_add",repr(x),flush=True); return "タスク登録でエラーが出た。"
+    if re.search(r"^(?:タスク一覧|未完了タスク|やること一覧)$",clean):
+        try:
+            with db() as cn:
+                with cn.cursor() as c:
+                    c.execute("""SELECT id,title,due_date FROM tasks WHERE conversation_id=%s AND status='open'
+                    ORDER BY due_date NULLS LAST,created_at DESC LIMIT 30""",(cid,)); rows=c.fetchall()
+            return "未完了タスクはないよ🧭" if not rows else "未完了タスク🧭\n"+"\n".join(f"#{i} {t}"+(f"（{d}）" if d else "") for i,t,d in rows)
+        except Exception as x:
+            print("task_list",repr(x),flush=True); return "タスク取得でエラーが出た。"
+    done=re.match(r"(?:タスク(?:を)?完了|完了タスク)[：\s#]*([0-9]+)",clean)
+    if done:
+        try:
+            with db() as cn:
+                with cn.cursor() as c:
+                    c.execute("""UPDATE tasks SET status='done',updated_at=NOW() WHERE id=%s AND conversation_id=%s
+                    AND status='open' RETURNING title""",(int(done.group(1)),cid)); row=c.fetchone()
+                cn.commit()
+            return f"完了にしたよ🧭 #{done.group(1)} {row[0]}" if row else "その未完了タスクは見つからなかった。"
+        except Exception as x:
+            print("task_done",repr(x),flush=True); return "タスク更新でエラーが出た。"
     return None
 
 def dashboard_auth(view):
@@ -698,8 +787,11 @@ def webhook():
                 reply(e.get("replyToken"),proactive)
             continue
 
+        quick_task=task_command(text,uid,cid)
         awaiting=latest_awaiting(cid,uid)
-        if awaiting and re.search(r"^(ナミ[、, ]*)?(反映して|承認|OK|おけ|やって)$",text.strip(),re.I):
+        if quick_task:
+            ans=quick_task
+        elif awaiting and re.search(r"^(ナミ[、, ]*)?(反映して|承認|OK|おけ|やって)$",text.strip(),re.I):
             try:
                 ok,msg=merge_pr(awaiting[2])
                 if ok:set_improvement_status(awaiting[0],"merged")
