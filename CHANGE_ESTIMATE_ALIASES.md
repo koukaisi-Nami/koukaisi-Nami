@@ -1,0 +1,1 @@
+This change makes estimate extraction robust to wording differences across rental diagrams, including guarantee deposits, guarantee-company fees, insurance, support, keys, and unknown contract-time fees. It also enforces the 20,000 yen insurance fallback and duplicate prevention.
