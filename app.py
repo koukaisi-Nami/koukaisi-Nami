@@ -5,6 +5,7 @@ from functools import wraps
 from intent_router import should_create_reminder, reminder_has_enough_context, reminder_needs_timing, reminder_needs_timing
 from flask import Flask, request, abort, Response, render_template_string, send_file
 from estimate_document import make_estimate_document, make_estimate_image
+from structured_estimate_runtime import generate_text as structured_estimate
 
 app = Flask(__name__)
 SECRET=os.getenv("LINE_CHANNEL_SECRET","")
@@ -204,9 +205,11 @@ def batch_artifact_marker(text):
 def send_batch_estimate_artifacts(reply_token,target,estimates,base,marker):
     if not estimates:return
     first_messages=[]
-    for i,estimate_text in enumerate(estimates):
+    for i,estimate in enumerate(estimates):
+        estimate_text=estimate.get('text','') if isinstance(estimate,dict) else str(estimate)
+        estimate_data=estimate.get('data') if isinstance(estimate,dict) else estimate
         key=hashlib.sha256((str(time.time())+str(i)+estimate_text).encode()).hexdigest()[:24]
-        ESTIMATE_CACHE[key]=(time.time(),estimate_text)
+        ESTIMATE_CACHE[key]=(time.time(),estimate_data)
         image_url=f"{base}/estimate-file/{key}.png"
         pdf_url=f"{base}/estimate-file/{key}.pdf"
         msgs=[]
@@ -979,11 +982,12 @@ def batch_estimates_using_single(groups,user_instruction,uid,cid):
         analyses='\n---\n'.join(a.get('analysis','') for a in g['attachments'])
         material=f"物件名：{p.get('name','')}\n号室：{p.get('room','')}\n住所：{p.get('address','')}\n【募集図面の読取結果】\n{analyses}"
         instruction=(user_instruction or '')+f"\nこれは全{total}件中{index}件目。ほかの物件と混ぜず、この1物件だけを単独見積もりとして計算・出力すること。"
-        estimate=ai(single_estimate_prompt(instruction)+"\n\n"+material,uid,cid)
         label=p.get('name') or p.get('address') or f'{index}件目'
         room=p.get('room') or ''
-        header=f"【{index}/{total} {label}{(' '+room) if room else ''}】"
-        answers.append(header+"\n"+estimate)
+        prop_name=label+((' '+room) if room else '')
+        data,estimate=structured_estimate(ai,instruction,material,uid,cid,prop_name)
+        header=f"【{index}/{total} {prop_name}】"
+        answers.append({'data':data,'text':header+"\n"+estimate})
     return answers
 
 def three_document_command(text,uid,cid,qid=None):
@@ -1013,9 +1017,9 @@ def three_document_command(text,uid,cid,qid=None):
     elif re.search(r"(この|これ|それ|図面|画像|写真|PDF|資料)",clean,re.I):media_summary=image_analysis(cid) or ""
     if kind=="estimate" and (wants_image or wants_pdf):
         if not media_summary:return "見積書を作る募集図面がないよ。図面の画像/PDFにリプライして送って。"
-        estimate_text=ai(single_estimate_prompt(clean)+"\n\n【最優先：今回のユーザー指示】\n"+clean+"\nこの指示（入居日、仲介手数料の金額・無料・半額・月数等）を必ず計算に反映する。\n\n【募集図面の読取結果】\n"+media_summary,uid,cid)
+        estimate_data,estimate_text=structured_estimate(ai,clean,media_summary,uid,cid)
         marker="__ESTIMATE_BOTH__" if (wants_image and wants_pdf) else ("__ESTIMATE_IMAGE__" if wants_image else "__ESTIMATE_PDF__")
-        return (marker,estimate_text)
+        return (marker,estimate_data,estimate_text)
     def grab(pat):
         m=re.search(pat,clean,re.I);return m.group(1).strip() if m else ""
     client=grab(r"(?:宛名|宛先)[：:\s]*([^、,\n]+)");deadline=grab(r"(?:期限|支払期限)[：:\s]*([^、,\n]+)");amount=grab(r"(?:金額)[：:\s]*([0-9,]+)円?");ad=grab(r"AD\s*([0-9.]+)");broker=grab(r"(?:中手|仲介手数料)\s*([0-9.]+)")
@@ -1164,11 +1168,11 @@ ESTIMATE_CACHE={}
 def estimate_file_download(key,ext):
     row=ESTIMATE_CACHE.get(key)
     if not row:return "not found",404
-    created,text=row
+    created,estimate=row
     if time.time()-created>600:
         ESTIMATE_CACHE.pop(key,None); return "expired",404
-    if ext=="pdf": return send_file(make_estimate_document(text),mimetype="application/pdf",as_attachment=True,download_name="見積もり概算書.pdf")
-    if ext=="png": return send_file(make_estimate_image(text),mimetype="image/png")
+    if ext=="pdf": return send_file(make_estimate_document(estimate),mimetype="application/pdf",as_attachment=True,download_name="見積もり概算書.pdf")
+    if ext=="png": return send_file(make_estimate_image(estimate),mimetype="image/png")
     return "not found",404
 
 def reply_estimate_artifact(tok,base,key,marker):
@@ -1268,9 +1272,10 @@ def webhook():
             ans=quick_task
         elif quick_doc:
             if isinstance(quick_doc,tuple) and quick_doc[0] in ('__ESTIMATE_IMAGE__','__ESTIMATE_PDF__','__ESTIMATE_BOTH__'):
-                estimate_text=quick_doc[1]
+                estimate_data=quick_doc[1]
+                estimate_text=quick_doc[2]
                 key=hashlib.sha256((eid+str(time.time())).encode()).hexdigest()[:24]
-                ESTIMATE_CACHE[key]=(time.time(),estimate_text)
+                ESTIMATE_CACHE[key]=(time.time(),estimate_data)
                 base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')
                 save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",estimate_text)
                 reply_estimate_artifact(e.get("replyToken"),base,key,quick_doc[0])
@@ -1329,17 +1334,17 @@ def webhook():
         batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None
         if batch_marker and isinstance(batch_answer,list):
             base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')
-            saved_ans="\n\n".join(batch_answer)
+            saved_ans="\n\n".join((x.get('text','') if isinstance(x,dict) else str(x)) for x in batch_answer)
             save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
             send_batch_estimate_artifacts(e.get("replyToken"),line_target(e),batch_answer,base,batch_marker)
             continue
-        saved_ans="\n\n".join(ans) if isinstance(ans,(list,tuple)) else ans
+        saved_ans="\n\n".join((x.get('text','') if isinstance(x,dict) else str(x)) for x in ans) if isinstance(ans,(list,tuple)) else ans
         save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
         if isinstance(ans,list):
             target=line_target(e)
             if ans:
-                reply(e.get("replyToken"),ans[0])
-                for item in ans[1:]:push_line(target,item)
+                reply(e.get("replyToken"),ans[0].get('text','') if isinstance(ans[0],dict) else ans[0])
+                for item in ans[1:]:push_line(target,item.get('text','') if isinstance(item,dict) else item)
         else:
             reply(e.get("replyToken"),ans)
     return "OK",200
