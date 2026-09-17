@@ -1,0 +1,42 @@
+name: Apply self-improvement entry v2
+on:
+  push:
+    branches: [chapi/fix-self-improve-entry-v2]
+    paths:
+      - 'scripts/fix_self_improve_entry_v2.py'
+      - '.github/workflows/apply-self-improve-entry-v2.yml'
+jobs:
+  apply:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi/fix-self-improve-entry-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Patch runtime routing
+        run: python scripts/fix_self_improve_entry_v2.py
+      - name: Guard exact behavior
+        run: |
+          python -m py_compile app.py owner_guard.py nami_supervisor.py
+          grep -q 'owner_self_improve = improvement_intent(text) and can_self_improve(uid)' app.py
+          grep -q 'if not owner_self_improve:' app.py
+          grep -q 'elif owner_self_improve:' app.py
+          grep -q 'コード.{0,24}' app.py
+          grep -q 'PR.{0,24}' app.py
+      - name: Preserve existing regression tests
+        run: |
+          python -m pip install pytest
+          python -m pytest -q test_nami_supervisor.py
+          python -m unittest tests.test_owner_guard
+      - name: Commit patched app only to PR branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Route owner self-improvement before memory learning'
+          git push

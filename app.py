@@ -680,7 +680,11 @@ def merge_pr(num):
 
 
 def improvement_intent(text):
-    return bool(re.search(r"(改善して|直して|機能追加|できるようにして|アップデートして|改修して)",text or ""))
+    # Explicit owner development instructions must never fall through to memory/chat.
+    return bool(re.search(
+        r"(機能改善|改善して|直して|修正して|機能追加|できるようにして|アップデートして|改修して|"
+        r"コード.{0,24}(?:変更|修正|直|書き換)|(?:実装|追加)して|PR.{0,24}(?:作|作成))",
+        text or "", re.I))
 
 def improvement_plan(text,uid,cid):
     prompt="""これは航海士ナミ自身への機能改善要求です。
@@ -1303,7 +1307,11 @@ def webhook():
 
         text=m.get("text","")
         save_msg(eid,cid,uid,nm,"user",text,"text",mid,qid)
-        learn_important(text,uid,cid)
+        # Owner self-improvement is classified before durable learning. This prevents
+        # code/PR instructions from being accidentally stored as personal/group memory.
+        owner_self_improve = improvement_intent(text) and can_self_improve(uid)
+        if not owner_self_improve:
+            learn_important(text,uid,cid)
 
         if grouped(e) and not called(m):
             proactive=manager_review(text,uid,cid)
@@ -1388,7 +1396,7 @@ def webhook():
             except Exception as x:
                 print("merge_pr",repr(x),flush=True)
                 ans="反映処理でエラー。既存本番は変更していないよ。"
-        elif improvement_intent(text) and can_self_improve(uid):
+        elif owner_self_improve:
             plan=improvement_plan(text,uid,cid)
             rid=add_improvement(cid,uid,text,plan)
             if github_ready():
