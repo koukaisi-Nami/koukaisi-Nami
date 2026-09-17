@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from intent_router import should_create_reminder, reminder_has_enough_context, reminder_needs_timing, reminder_needs_timing
 from flask import Flask, request, abort, Response, render_template_string, send_file
+from estimate_document import make_estimate_document, make_estimate_image
 
 app = Flask(__name__)
 SECRET=os.getenv("LINE_CHANNEL_SECRET","")
@@ -870,8 +871,8 @@ def three_document_command(text,uid,cid,qid=None):
     clean=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",(text or "").strip(),flags=re.I)
     kind="ad" if re.search(r"(AD請求|AD作|広告料.*請求|業務委託料.*請求)",clean,re.I) else ("brokerage" if re.search(r"(中手|仲介手数料精算)",clean,re.I) else ("estimate" if re.search(r"(見積|初期費用|入居計算)",clean,re.I) else None))
     if not kind:return None
-    wants_image=kind=="estimate" and bool(re.search(r"(画像|イメージ|一枚|1枚|写真にして)",clean,re.I))
-    wants_pdf=bool(re.search(r"(PDF|pdf|書類|発行)",clean))
+    wants_image=kind=="estimate" and bool(re.search(r"(画像|イメージ|jpg|jpeg|png|一枚|1枚|写真にして)",clean,re.I))
+    wants_pdf=kind=="estimate" and bool(re.search(r"(PDF|pdf)",clean,re.I)) or (kind!="estimate" and bool(re.search(r"(PDF|pdf|書類|発行)",clean,re.I)))
     if kind=="estimate" and not wants_image and not wants_pdf:
         prompt=single_estimate_prompt(clean)
         if qid:
@@ -890,12 +891,11 @@ def three_document_command(text,uid,cid,qid=None):
             if blob[:5]==b"%PDF-":mime="application/pdf"
             media_summary=analyze(blob,mime,uid,cid,question="物件名、号室、賃料、管理費/共益費、敷金、礼金、保証料、仲介手数料、保険、鍵交換、クリーニング、24時間サポート、その他必須費用を帳票用に抽出。各金額と条件を明記。推測禁止。")
     elif re.search(r"(この|これ|それ|図面|画像|写真|PDF|資料)",clean,re.I):media_summary=image_analysis(cid) or ""
-    if kind=="estimate" and wants_image:
-        if not media_summary:return "見積もり画像を作る募集図面がないよ。図面の画像/PDFにリプライして『ナミ、見積もり画像作って』と送って。"
-        return ("__ESTIMATE_IMAGE__",media_summary)
-    if kind=="estimate":
-        if not media_summary:return "見積書を作る募集図面がないよ。図面にリプライして送って。"
-        return ("__PDF__","見積り書",{"title":"見積もり概算書","description":media_summary,"notes":"本書は概算の見積もりです。詳細は別途ご案内いたします。"})
+    if kind=="estimate" and (wants_image or wants_pdf):
+        if not media_summary:return "見積書を作る募集図面がないよ。図面の画像/PDFにリプライして送って。"
+        estimate_text=ai(single_estimate_prompt(clean)+"\n\n【募集図面の読取結果】\n"+media_summary,uid,cid)
+        marker="__ESTIMATE_BOTH__" if (wants_image and wants_pdf) else ("__ESTIMATE_IMAGE__" if wants_image else "__ESTIMATE_PDF__")
+        return (marker,estimate_text)
     def grab(pat):
         m=re.search(pat,clean,re.I);return m.group(1).strip() if m else ""
     client=grab(r"(?:宛名|宛先)[：:\s]*([^、,\n]+)");deadline=grab(r"(?:期限|支払期限)[：:\s]*([^、,\n]+)");amount=grab(r"(?:金額)[：:\s]*([0-9,]+)円?");ad=grab(r"AD\s*([0-9.]+)");broker=grab(r"(?:中手|仲介手数料)\s*([0-9.]+)")
@@ -1038,6 +1038,34 @@ def command_pdf():
     stamp=datetime.now().strftime("%Y%m%d-%H%M")
     return send_file(out,as_attachment=True,download_name=f"{kind}-{stamp}.pdf",mimetype="application/pdf")
 
+ESTIMATE_CACHE={}
+
+@app.get("/estimate-file/<key>.<ext>")
+def estimate_file_download(key,ext):
+    row=ESTIMATE_CACHE.get(key)
+    if not row:return "not found",404
+    created,text=row
+    if time.time()-created>600:
+        ESTIMATE_CACHE.pop(key,None); return "expired",404
+    if ext=="pdf": return send_file(make_estimate_document(text),mimetype="application/pdf",as_attachment=True,download_name="見積もり概算書.pdf")
+    if ext=="png": return send_file(make_estimate_image(text),mimetype="image/png")
+    return "not found",404
+
+def reply_estimate_artifact(tok,base,key,marker):
+    image_url=f"{base}/estimate-file/{key}.png"
+    pdf_url=f"{base}/estimate-file/{key}.pdf"
+    msgs=[]
+    if marker in ("__ESTIMATE_IMAGE__","__ESTIMATE_BOTH__"):
+        msgs.append({"type":"image","originalContentUrl":image_url,"previewImageUrl":image_url})
+    if marker in ("__ESTIMATE_PDF__","__ESTIMATE_BOTH__"):
+        # LINE Messaging API has no outbound file-message type; deliver the temporary PDF URL as text.
+        msgs.append({"type":"text","text":"見積もり概算書PDFはこちら\n"+pdf_url})
+    try:
+        r=requests.post("https://api.line.me/v2/bot/message/reply",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},json={"replyToken":tok,"messages":msgs[:5]},timeout=30)
+        if not r.ok: print("LINE estimate artifact",r.status_code,r.text[:1000],flush=True)
+        return r.ok
+    except Exception as x: print("reply_estimate_artifact",repr(x),flush=True); return False
+
 @app.get("/")
 def health():return "航海士ナミ FINAL 部長モード OK",200
 
@@ -1116,8 +1144,14 @@ def webhook():
         elif quick_task:
             ans=quick_task
         elif quick_doc:
-            if isinstance(quick_doc,tuple) and quick_doc[0]=='__ESTIMATE_IMAGE__':
-                ans='見積もり画像用の内容を作成したよ🧭\n'+quick_doc[1]+'\n※画像は固定テンプレート描画で金額を変えずに生成する仕様です。'
+            if isinstance(quick_doc,tuple) and quick_doc[0] in ('__ESTIMATE_IMAGE__','__ESTIMATE_PDF__','__ESTIMATE_BOTH__'):
+                estimate_text=quick_doc[1]
+                key=hashlib.sha256((eid+str(time.time())).encode()).hexdigest()[:24]
+                ESTIMATE_CACHE[key]=(time.time(),estimate_text)
+                base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')
+                save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",estimate_text)
+                reply_estimate_artifact(e.get("replyToken"),base,key,quick_doc[0])
+                continue
             elif isinstance(quick_doc,tuple) and quick_doc[0]=='__PDF__':
                 _,pdf_kind,pdf_data=quick_doc;make_pdf(pdf_kind,pdf_data)
                 ans=pdf_kind+'の内容を作成したよ🧭\n'+pdf_data.get('description','')
