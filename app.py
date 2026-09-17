@@ -7,6 +7,7 @@ from flask import Flask, request, abort, Response, render_template_string, send_
 from estimate_document import make_estimate_document, make_estimate_image
 from structured_estimate_runtime import generate_text as structured_estimate
 from owner_guard import can_self_improve
+from nami_supervisor import route_intent, line_scope, wants_company_memory, needs_supervisor_review, reviewer_instructions
 
 app = Flask(__name__)
 SECRET=os.getenv("LINE_CHANNEL_SECRET","")
@@ -894,6 +895,7 @@ def learn_important(text,uid,cid):
     company_scope=re.search(r"(全社|全社共通|会社全体|社内共通|全グループ|会社ルール|弊社ルール)",t,re.I)
     company_fact=re.search(r"(ルール|規定|方針|標準|手数料|料金|請求|見積|フロー|営業時間|禁止|必須)",t,re.I)
     if company_scope and company_fact:
+        if not can_self_improve(uid): return None
         add_memory("company","company","company_rule","会社共通ルール",t,uid)
         return "会社共通ルールとして記憶しました。"
     if company_fact and re.search(r"(弊社|うちの会社|会社|社内|業務)",t,re.I):
@@ -991,13 +993,15 @@ speak=trueはseverity 4以上だけ。messageは事実→理由→具体的な�
     return None
 
 
-def explicit_learning(text,uid):
+def explicit_learning(text,uid,cid=None,source_type="user"):
     t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",(text or "").strip(),flags=re.I)
     if not t:
         return None
 
     company_scope=re.search(r"(全社|全社共通|会社全体|社内共通|全グループ|会社ルール|弊社ルール)",t,re.I)
     if company_scope:
+        if not can_self_improve(uid):
+            return "会社共通ルールの変更は船長だけができるよ🧭"
         payload=re.sub(r"(全社共通|全社|会社全体|社内共通|全グループ|会社ルール|弊社ルール)[、,:：\s]*","",t,flags=re.I).strip()
         if payload:
             add_memory("company","company","company_rule","会社共通ルール",payload,uid)
@@ -1005,7 +1009,9 @@ def explicit_learning(text,uid):
 
     group=re.search(r"(?:このグループ|この会話|この案件|このスレッド)(?:では|のルールは)?[：:、,\s]*(.+)",t,re.S|re.I)
     if group:
-        add_memory("conversation",cid if 'cid' in locals() else "", "group_context","グループルール",group.group(1).strip(),uid)
+        if source_type not in ("group","room") or not cid:
+            return "どのグループの記憶にするか、そのグループで送ってね🧭"
+        add_memory("conversation",cid, "group_context","グループルール",group.group(1).strip(),uid)
         return "このグループの記憶として覚えたよ🧭"
 
     m=re.search(r"(.{1,50}?)(?:の作り方|のやり方|のルール)[：:、,\s]*(.+)",t,re.S)
@@ -1401,7 +1407,8 @@ def webhook():
                 ans=(f"改善要求を保存したよ🧭 ID:{rid}\n\n{plan}\n\n"
                      "GitHub自己改善は未接続。RenderにGITHUB_TOKEN / GITHUB_REPO / SELF_IMPROVE=trueを設定すると有効になる。")
         else:
-            taught=explicit_learning(text,uid)
+            source_type=(e.get("source") or {}).get("type","user")
+            taught=explicit_learning(text,uid,cid,source_type)
             if taught: ans=taught
             else:
                 # Reply to an image/PDF: fetch the original quoted media and answer from the actual bytes.
