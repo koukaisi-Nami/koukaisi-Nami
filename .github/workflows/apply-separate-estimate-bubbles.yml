@@ -1,0 +1,55 @@
+name: Apply separate estimate bubbles
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-separate-estimate-bubbles.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch app.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text()
+          old='''        if isinstance(ans,list):
+            # LINE reply is capped at 5 messages. Reply with the first batch, then push the rest one by one.
+            first=ans[:5]
+            reply(e.get("replyToken"),first)
+            target=line_target(e)
+            for item in ans[5:]:
+                push_line(target,item)
+        else:
+            reply(e.get("replyToken"),ans)
+'''
+          new='''        if isinstance(ans,list):
+            # Multi-property estimates must be separate LINE bubbles so each property can be forwarded independently.
+            # Use the reply token for only the first property, then push every remaining property separately.
+            # This intentionally avoids putting several text messages in one reply API call.
+            target=line_target(e)
+            if ans:
+                reply(e.get("replyToken"),ans[0])
+                for item in ans[1:]:
+                    push_line(target,item)
+        else:
+            reply(e.get("replyToken"),ans)
+'''
+          if old not in s:
+              raise SystemExit('target block not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+          python -m py_compile app.py
+      - name: Commit
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Send each property estimate as a separate LINE bubble"
+          git push
