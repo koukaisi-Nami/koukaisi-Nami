@@ -8,6 +8,7 @@ from estimate_document import make_estimate_document, make_estimate_image
 from structured_estimate_runtime import generate_text as structured_estimate
 from owner_guard import can_self_improve
 from nami_frontier import model_for_task, reasoning_for_task, task_for_text
+from nami_openai_media import wants_image_generation, image_prompt, generate_image
 from nami_supervisor import route_intent, line_scope, wants_company_memory, needs_supervisor_review, reviewer_instructions
 
 app = Flask(__name__)
@@ -18,6 +19,8 @@ DB_URL=os.getenv("DATABASE_URL","")
 MODEL=os.getenv("OPENAI_MODEL") or model_for_task("chat")
 OA="https://api.openai.com/v1/responses"
 HTTP=requests.Session()
+GENERATED_IMAGE_CACHE={}
+GENERATED_IMAGE_TTL=900
 
 # LINE承認式の自己改善
 GITHUB_TOKEN=os.getenv("GITHUB_TOKEN","")
@@ -930,6 +933,10 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
     if needs_web:
         payload["tools"]=[{"type":"web_search"}]
         payload["tool_choice"]="auto"
+    vector_store=os.getenv("OPENAI_VECTOR_STORE_ID","").strip()
+    if vector_store and runtime_task in ("knowledge","document","balanced"):
+        payload.setdefault("tools",[]).append({"type":"file_search","vector_store_ids":[vector_store]})
+        payload["tool_choice"]="auto"
     try:
         r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=90)
         if not r.ok:
@@ -1383,6 +1390,39 @@ def reply_estimate_artifact(tok,base,key,marker):
         return r.ok
     except Exception as x: print("reply_estimate_artifact",repr(x),flush=True); return False
 
+def push_generated_image(target,url,caption=""):
+    msgs=[{"type":"image","originalContentUrl":url,"previewImageUrl":url}]
+    if caption: msgs.append({"type":"text","text":caption[:4900]})
+    try:
+        r=HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},json={"to":target,"messages":msgs[:5]},timeout=25)
+        if not r.ok: print("LINE generated image",r.status_code,r.text[:1000],flush=True)
+        return r.ok
+    except Exception as x:
+        print("push_generated_image",repr(x),flush=True); return False
+
+@app.get("/generated-image/<key>.png")
+def generated_image_file(key):
+    row=GENERATED_IMAGE_CACHE.get(key)
+    if not row:return "not found",404
+    created,blob=row
+    if time.time()-created>GENERATED_IMAGE_TTL:
+        GENERATED_IMAGE_CACHE.pop(key,None); return "expired",404
+    return Response(blob,mimetype="image/png",headers={"Cache-Control":"public, max-age=600"})
+
+def start_frontier_image_generation(cid,target,prompt,base):
+    def worker():
+        try:
+            blob=generate_image(prompt,OPENAI_KEY,HTTP)
+            key=hashlib.sha256((cid+str(time.time())+prompt[:200]).encode()).hexdigest()[:28]
+            GENERATED_IMAGE_CACHE[key]=(time.time(),blob)
+            url=f"{base}/generated-image/{key}.png"
+            push_generated_image(target,url,"画像できたよ🧭")
+            save_msg("imagegen:"+key,cid,"bot","航海士ナミ","assistant","[生成画像] "+prompt[:500])
+        except Exception as x:
+            print("frontier_image_generation",repr(x),flush=True)
+            push_line(target,"画像生成でエラーが出たよ。既存機能には影響していないよ。")
+    threading.Thread(target=worker,daemon=True,name="nami-image-gen").start()
+
 @app.get("/")
 def health():return "航海士ナミ FINAL 部長モード OK",200
 
@@ -1417,6 +1457,11 @@ def webhook():
             continue
         text=m.get('text','')
         save_msg(eid,cid,uid,nm,'user',text,'text',mid,qid)
+        if wants_image_generation(text):
+            base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
+            reply(e.get('replyToken'),'画像を作り始めたよ🧭 完成したらここに送るね。')
+            start_frontier_image_generation(cid,line_target(e),image_prompt(text),base)
+            continue
         if (text or '').strip()=='おやすみ':
             ans='おやすみ船長🌙'
             save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',ans)
