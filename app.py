@@ -1,5 +1,8 @@
 import os, re, json, base64, hashlib, hmac, requests, psycopg, ast, time
-from flask import Flask, request, abort
+from io import BytesIO
+from datetime import datetime
+from functools import wraps
+from flask import Flask, request, abort, Response, render_template_string, send_file
 
 app = Flask(__name__)
 SECRET=os.getenv("LINE_CHANNEL_SECRET","")
@@ -15,6 +18,7 @@ GITHUB_REPO=os.getenv("GITHUB_REPO","")  # owner/repo
 GITHUB_BRANCH=os.getenv("GITHUB_BRANCH","main")
 GITHUB_APP_PATH=os.getenv("GITHUB_APP_PATH","app.py")
 SELF_IMPROVE=os.getenv("SELF_IMPROVE","false").lower()=="true"
+DASHBOARD_PASSWORD=os.getenv("NAMI_DASHBOARD_PASSWORD","")
 
 def db(): return psycopg.connect(DB_URL)
 
@@ -79,6 +83,17 @@ def init_db():
             c.execute("CREATE INDEX IF NOT EXISTS msg_conv ON messages(conversation_id,created_at DESC)")
             c.execute("CREATE INDEX IF NOT EXISTS msg_line_id ON messages(line_message_id)")
             c.execute("CREATE INDEX IF NOT EXISTS mem_scope ON memories(scope,scope_id,updated_at DESC)")
+            c.execute("""CREATE TABLE IF NOT EXISTS cases(
+              id BIGSERIAL PRIMARY KEY,client_name TEXT NOT NULL,assignee TEXT DEFAULT '',
+              status TEXT DEFAULT 'ヒアリング中',budget TEXT DEFAULT '',area TEXT DEFAULT '',
+              move_in TEXT DEFAULT '',notes TEXT DEFAULT '',next_action TEXT DEFAULT '',
+              due_date DATE,created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("""CREATE TABLE IF NOT EXISTS tasks(
+              id BIGSERIAL PRIMARY KEY,case_id BIGINT REFERENCES cases(id) ON DELETE CASCADE,
+              title TEXT NOT NULL,status TEXT DEFAULT 'open',due_date DATE,
+              created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("CREATE INDEX IF NOT EXISTS cases_updated_idx ON cases(updated_at DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS tasks_open_idx ON tasks(status,due_date)")
         cn.commit()
 
 def save_msg(eid,cid,uid,name,role,content,mtype="text",mid=None,qid=None):
@@ -555,6 +570,95 @@ def explicit_learning(text,uid):
     if m:
         add_memory("user",uid,"general","",m.group(1),uid);return f"覚えたよ🧭\n「{m.group(1)}」"
     return None
+
+def dashboard_auth(view):
+    @wraps(view)
+    def wrapped(*args,**kwargs):
+        if not DASHBOARD_PASSWORD:
+            return "NAMI_DASHBOARD_PASSWORD をRenderのEnvironmentへ設定するとWeb司令室が開く。",503
+        auth=request.authorization
+        valid=auth and auth.username=="nami" and hmac.compare_digest(auth.password or "",DASHBOARD_PASSWORD)
+        if not valid:
+            return Response("認証が必要です",401,{"WWW-Authenticate":'Basic realm="Nami Command"'})
+        return view(*args,**kwargs)
+    return wrapped
+
+def dashboard_rows(sql,params=()):
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute(sql,params); return c.fetchall()
+    except Exception as x:
+        print("dashboard",repr(x),flush=True); return []
+
+def make_pdf(kind,data):
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+    out=BytesIO(); page=canvas.Canvas(out,pagesize=A4); width,height=A4
+    page.setTitle(f"航海士ナミ {kind}")
+    page.setFont("HeiseiKakuGo-W5",20); page.drawString(20*mm,height-25*mm,kind)
+    page.setFont("HeiseiKakuGo-W5",10); page.drawRightString(width-20*mm,height-25*mm,datetime.now().strftime("発行日 %Y/%m/%d"))
+    y=height-45*mm
+    for label,key in [("宛名","client"),("件名","title"),("金額","amount"),("内容","description"),("備考","notes")]:
+        value=(data.get(key) or "-").replace("\n"," ")
+        page.setFont("HeiseiKakuGo-W5",10); page.drawString(20*mm,y,label)
+        page.setFont("HeiseiKakuGo-W5",12 if key=="amount" else 10); page.drawString(50*mm,y,value[:65])
+        page.line(20*mm,y-4*mm,width-20*mm,y-4*mm); y-=14*mm
+    page.setFont("HeiseiKakuGo-W5",9); page.drawString(20*mm,18*mm,"Steer Ship株式会社 / 航海士ナミ")
+    page.showPage(); page.save(); out.seek(0); return out
+
+def yen(value):
+    try: return int(float(re.sub(r"[^0-9.]","",value or "0")))
+    except: return 0
+
+def quick_estimate(form):
+    rent=yen(form.get("rent")); management=yen(form.get("management"))
+    deposit=rent*float(form.get("deposit_months") or 0)
+    key_money=rent*float(form.get("key_months") or 0)
+    broker=(rent+management)*float(form.get("broker_months") or 1.1)
+    guarantee=yen(form.get("guarantee")); insurance=yen(form.get("insurance")); key=yen(form.get("key_exchange")); other=yen(form.get("other"))
+    lines=[("賃料",rent),("管理費",management),("敷金",deposit),("礼金",key_money),("仲介手数料",broker),("保証会社",guarantee),("火災保険",insurance),("鍵交換",key),("その他",other)]
+    total=sum(v for _,v in lines)
+    detail=" / ".join(f"{n} ¥{int(v):,}" for n,v in lines if v)
+    return {"client":form.get("client",""),"title":form.get("title","初期費用見積"),"amount":f"¥{int(total):,}","description":detail,"notes":form.get("notes","")}
+
+COMMAND_HTML="""<!doctype html><html lang='ja'><meta charset='utf-8'><title>航海士ナミ 司令室</title>
+<style>body{margin:0;background:#07131f;color:#e8f0f7;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif}main{max-width:1200px;margin:auto;padding:32px}h1{margin:0;color:#74d3ff}.sub{color:#9ab0c2}section{background:#102535;border:1px solid #21435a;border-radius:14px;padding:20px;margin-top:18px}h2{margin-top:0;color:#b6e8ff}table{width:100%;border-collapse:collapse}td,th{padding:9px;border-bottom:1px solid #23465e;text-align:left;font-size:14px}input,textarea,select{background:#071924;color:#fff;border:1px solid #37627a;border-radius:7px;padding:9px;width:100%;box-sizing:border-box}textarea{min-height:60px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.wide{grid-column:span 3}button{background:#14a4e8;border:0;color:#fff;padding:10px 15px;border-radius:8px;font-weight:700;cursor:pointer}.stat{display:flex;gap:12px}.stat div{background:#0c1d2a;padding:12px;border-radius:10px;min-width:110px}</style>
+<main><h1>航海士ナミ 司令室</h1><p class='sub'>LINEは現場、ここは案件・記憶・見積・請求の管理場所。</p>
+<section><div class='stat'><div>案件 <b>{{ cases|length }}</b></div><div>未完了タスク <b>{{ tasks|length }}</b></div><div>部長ナミ注意 <b>{{ insights|length }}</b></div></div></section>
+<section><h2>新規案件</h2><form method='post' class='grid'><input name='client_name' placeholder='顧客名' required><input name='assignee' placeholder='担当者'><select name='status'><option>ヒアリング中</option><option>物件提案中</option><option>申込中</option><option>審査中</option><option>契約中</option><option>成約</option></select><input name='budget' placeholder='予算'><input name='area' placeholder='希望エリア'><input name='move_in' placeholder='入居希望'><input class='wide' name='next_action' placeholder='次アクション'><textarea class='wide' name='notes' placeholder='条件・注意点'></textarea><button>案件を保存</button></form></section>
+<section><h2>案件一覧</h2><table><tr><th>顧客</th><th>担当</th><th>状況</th><th>希望</th><th>次アクション</th></tr>{% for x in cases %}<tr><td>{{x[1]}}</td><td>{{x[2]}}</td><td>{{x[3]}}</td><td>{{x[4]}} / {{x[5]}}</td><td>{{x[8]}}</td></tr>{% else %}<tr><td colspan='5'>まだ案件がない</td></tr>{% endfor %}</table></section>
+<section><h2>初期費用見積 - かんたん作成</h2><p class='sub'>月数と金額を入れるだけ。合計と内訳を自動計算してPDFにする。</p><form action='/nami/pdf' method='post' class='grid'><input type='hidden' name='kind' value='初期費用見積書'><input name='client' placeholder='宛名' required><input name='title' placeholder='物件名・号室' required><input name='rent' placeholder='賃料（円）' required><input name='management' placeholder='管理費（円）'><input name='deposit_months' value='0' placeholder='敷金（月数）'><input name='key_months' value='0' placeholder='礼金（月数）'><input name='broker_months' value='1.1' placeholder='仲介料（月数・税込）'><input name='guarantee' placeholder='保証会社（円）'><input name='insurance' placeholder='火災保険（円）'><input name='key_exchange' placeholder='鍵交換（円）'><input name='other' placeholder='その他（円）'><textarea class='wide' name='notes' placeholder='備考・特約'></textarea><button>自動計算して見積PDFを作成</button></form><hr><h2>請求書PDF</h2><form action='/nami/pdf' method='post' class='grid'><input type='hidden' name='kind' value='請求書'><input name='client' placeholder='宛名' required><input name='title' placeholder='件名' required><input name='amount' placeholder='金額（税込）' required><input class='wide' name='description' placeholder='内容'><textarea class='wide' name='notes' placeholder='備考'></textarea><button>請求書PDFを作成</button></form></section>
+<section><h2>部長ナミの注意</h2><table>{% for x in insights %}<tr><td>{{x[4]}}</td><td>{{x[5]}}</td></tr>{% else %}<tr><td>今は重大な注意なし</td></tr>{% endfor %}</table></section></main></html>"""
+
+@app.route("/nami",methods=["GET","POST"])
+@dashboard_auth
+def command_center():
+    if request.method=="POST":
+        values=(request.form.get("client_name",""),request.form.get("assignee",""),request.form.get("status","ヒアリング中"),request.form.get("budget",""),request.form.get("area",""),request.form.get("move_in",""),request.form.get("notes",""),request.form.get("next_action",""))
+        if values[0]:
+            with db() as cn:
+                with cn.cursor() as c:
+                    c.execute("""INSERT INTO cases(client_name,assignee,status,budget,area,move_in,notes,next_action)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",values)
+                cn.commit()
+    cases=dashboard_rows("SELECT id,client_name,assignee,status,budget,area,move_in,notes,next_action FROM cases ORDER BY updated_at DESC LIMIT 100")
+    tasks=dashboard_rows("SELECT id,title,due_date FROM tasks WHERE status='open' ORDER BY due_date NULLS LAST LIMIT 100")
+    insights=dashboard_rows("SELECT id,conversation_id,insight_type,severity,summary,created_at FROM manager_insights WHERE status='open' ORDER BY created_at DESC LIMIT 30")
+    return render_template_string(COMMAND_HTML,cases=cases,tasks=tasks,insights=insights)
+
+@app.post("/nami/pdf")
+@dashboard_auth
+def command_pdf():
+    kind=request.form.get("kind","見積書")
+    data=quick_estimate(request.form) if kind=="初期費用見積書" else request.form
+    out=make_pdf(kind,data)
+    stamp=datetime.now().strftime("%Y%m%d-%H%M")
+    return send_file(out,as_attachment=True,download_name=f"{kind}-{stamp}.pdf",mimetype="application/pdf")
 
 @app.get("/")
 def health():return "航海士ナミ FINAL 部長モード OK",200
