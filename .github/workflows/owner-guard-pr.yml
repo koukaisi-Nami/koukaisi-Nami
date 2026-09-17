@@ -1,0 +1,20 @@
+name: Owner guard PR validation
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/apply_owner_guard.py
+      - run: python -m py_compile app.py owner_guard.py
+      - run: python -m unittest tests.test_owner_guard
+      - name: Ensure migration produces guarded app
+        run: |
+          grep -q 'from owner_guard import can_self_improve' app.py
+          grep -q 'improvement_intent(text) and can_self_improve(uid)' app.py
+          grep -q 'awaiting and can_self_improve(uid)' app.py
