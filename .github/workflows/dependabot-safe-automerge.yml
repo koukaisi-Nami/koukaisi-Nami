@@ -1,6 +1,6 @@
 name: Safe dependency auto update
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 permissions:
   contents: write
@@ -11,7 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the exact Dependabot candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -22,8 +26,8 @@ jobs:
       - name: Compile production runtime
         run: >-
           python -m py_compile app.py
-          nami_frontier.py nami_safety.py nami_router.py nami_evolution.py
-          nami_memory_engine.py nami_evaluator.py nami_health.py
+          nami_frontier.py nami_rag.py nami_openai_media.py nami_safety.py nami_router.py
+          nami_evolution.py nami_memory_engine.py nami_evaluator.py nami_health.py
       - name: Full deterministic regression suite
         run: python -m pytest -q
       - name: Owner guard regression
@@ -33,14 +37,14 @@ jobs:
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
-      - name: Auto-merge patch/minor only
+      - name: Merge tested patch/minor update
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --squash --auto "$PR_URL"
+        run: gh pr merge --squash "$PR_URL"
       - name: Hold major updates for owner review
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
         run: echo "Major dependency update intentionally held for explicit review."
