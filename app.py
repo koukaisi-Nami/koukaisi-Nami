@@ -120,7 +120,36 @@ def init_db():
             # Kill every legacy reminder created before explicit opt-in existed.
             c.execute("UPDATE reminders SET status='cancelled',next_run_at=NULL,updated_at=NOW() WHERE status='active' AND COALESCE(explicit_opt_in,FALSE)=FALSE")
             c.execute("CREATE INDEX IF NOT EXISTS reminders_due_idx ON reminders(status,next_run_at)")
+            c.execute("""CREATE TABLE IF NOT EXISTS estimate_batch_items(
+              id BIGSERIAL PRIMARY KEY,conversation_id TEXT NOT NULL,user_id TEXT,
+              line_message_id TEXT UNIQUE,analysis TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("CREATE INDEX IF NOT EXISTS estimate_batch_conv ON estimate_batch_items(conversation_id,created_at DESC)")
         cn.commit()
+
+def add_estimate_batch_item(cid,uid,mid,analysis):
+    try:
+        with db() as cn:
+            with cn.cursor() as c:c.execute("INSERT INTO estimate_batch_items(conversation_id,user_id,line_message_id,analysis) VALUES(%s,%s,%s,%s) ON CONFLICT(line_message_id) DO NOTHING",(cid,uid,mid,analysis))
+            cn.commit()
+    except Exception as x:print("estimate_batch_add",repr(x),flush=True)
+
+def recent_estimate_batch(cid,minutes=15):
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("SELECT line_message_id,analysis FROM estimate_batch_items WHERE conversation_id=%s AND created_at>=NOW()-(%s * INTERVAL '1 minute') ORDER BY created_at",(cid,minutes))
+                return [{"line_message_id":r[0],"analysis":r[1]} for r in c.fetchall()]
+    except Exception as x:print("estimate_batch_recent",repr(x),flush=True);return []
+
+def clear_estimate_batch(cid):
+    try:
+        with db() as cn:
+            with cn.cursor() as c:c.execute("DELETE FROM estimate_batch_items WHERE conversation_id=%s",(cid,))
+            cn.commit()
+    except Exception as x:print("estimate_batch_clear",repr(x),flush=True)
+
+def is_batch_estimate_command(text):
+    return bool(re.search(r"(まとめて|一括|全部|複数).*(見積|初期費用)|(見積|初期費用).*(まとめて|一括|全部|複数)",(text or ''),re.I))
 
 def line_target(e):
     src=e.get("source",{})
@@ -1013,6 +1042,7 @@ def webhook():
                 continue
             a=analyze(rawmedia,"application/pdf" if is_pdf else mime,uid,cid)
             save_image(cid,uid,mid,a)
+            add_estimate_batch_item(cid,uid,mid,a)
             label="PDF解析" if is_pdf else "画像解析"
             save_msg(eid,cid,uid,nm,"user",f"[{label}]\n"+a,"file" if is_pdf else "image",mid,qid)
             if not grouped(e):
@@ -1031,6 +1061,18 @@ def webhook():
                 reply(e.get("replyToken"),proactive)
             continue
 
+        batch_answer=None
+        if is_batch_estimate_command(text):
+            items=recent_estimate_batch(cid)
+            if not items:
+                batch_answer="直近15分の見積資料が見つからないよ。PDFや画像をまとめて送ってから『ナミ、まとめて見積もり』と送ってね。"
+            else:
+                groups,ambiguous=group_attachments(items)
+                prompt,err=estimate_instruction(groups,ambiguous,text)
+                if err:batch_answer=err
+                elif prompt:
+                    batch_answer=ai(prompt,uid,cid)
+                    clear_estimate_batch(cid)
         reminder_done=complete_member_reminder(cid,text)
         reminder_timing_missing=reminder_needs_timing(text)
         member_task=parse_member_task(text) if reminder_has_enough_context(text) else None
@@ -1041,7 +1083,9 @@ def webhook():
         quick_task=task_command(text,uid,cid)
         quick_doc=three_document_command(text,uid,cid,qid)
         awaiting=latest_awaiting(cid,uid)
-        if reminder_done:
+        if batch_answer:
+            ans=batch_answer
+        elif reminder_done:
             ans=reminder_done
         elif reminder_timing_missing:
             ans="リマインドする間隔を指定してね。例：『10分おきにリマインドして』"

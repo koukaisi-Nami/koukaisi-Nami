@@ -1,0 +1,27 @@
+name: Apply multi property final
+on:
+  push:
+    branches: [chapi-multi-property-final]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python patch_multi_property_final.py
+      - run: python -m py_compile app.py multi_property_estimate.py
+      - run: |
+          grep -q 'estimate_batch_items' app.py
+          grep -q 'is_batch_estimate_command' app.py
+          grep -q '初回保証料（仮）' multi_property_estimate.py
+          grep -q '火災保険（仮）：20,000円' multi_property_estimate.py
+      - name: Commit integration
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Enable multi-property estimate batches in LINE'
+          git push
