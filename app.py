@@ -502,8 +502,39 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
                         json=payload,timeout=120)
         if not r.ok:
-            print("OPENAI",r.status_code,r.text,flush=True)
+            # Keep enough diagnostics in Render logs to tell temporary rate limits
+            # from exhausted API quota without exposing the API key.
+            request_id = r.headers.get("x-request-id") or r.headers.get("request-id") or ""
+            rate_headers = {
+                k: r.headers.get(k, "") for k in (
+                    "x-ratelimit-limit-requests",
+                    "x-ratelimit-remaining-requests",
+                    "x-ratelimit-reset-requests",
+                    "x-ratelimit-limit-tokens",
+                    "x-ratelimit-remaining-tokens",
+                    "x-ratelimit-reset-tokens",
+                    "retry-after",
+                )
+            }
+            try:
+                err = r.json().get("error", {})
+                error_type = err.get("type", "")
+                error_code = err.get("code", "")
+            except Exception:
+                error_type = ""
+                error_code = ""
+            print("OPENAI_ERROR", {
+                "status": r.status_code,
+                "request_id": request_id,
+                "error_type": error_type,
+                "error_code": error_code,
+                "rate_limit": rate_headers,
+                "body": r.text[:2000],
+            }, flush=True)
             if r.status_code==429:
+                kind = error_code or error_type
+                if kind == "insufficient_quota":
+                    return "OpenAI APIの利用枠不足だよ🧭 時間待ちでは直らない可能性が高いので、APIのBilling / Usageを確認して。"
                 return f"AIが混み合ってるよ🧭 上限回復まで{format_retry(r.text)}。少し時間をあけてもう一度送って。"
             return f"AIエラー({r.status_code})"
         d=r.json()
