@@ -1,0 +1,23 @@
+name: Validate three documents
+on:
+  push:
+    branches: [chapi-three-documents]
+    paths: [app.py, document_templates.py, three_documents_trigger.txt, .github/workflows/apply-three-documents.yml]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-three-documents
+      - name: Validate syntax and integration
+        run: |
+          python -m py_compile app.py document_templates.py
+          grep -q 'def three_document_command' app.py
+          grep -q '__ESTIMATE_IMAGE__' app.py
+          grep -q 'AD請求書' app.py
+          grep -q '仲介手数料精算書' app.py
+          grep -q '見積り書' app.py
+          grep -q 'quoted_blob,quoted_mime=content(qid)' app.py
