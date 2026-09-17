@@ -29,19 +29,35 @@ def init_db():
               created_at TIMESTAMPTZ DEFAULT NOW())""")
             # Safe migrations from older versions
             c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS event_id TEXT")
+            c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS conversation_id TEXT")
+            c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS user_id TEXT")
+            c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS user_name TEXT")
+            c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS role TEXT")
+            c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS message_type TEXT DEFAULT 'text'")
             c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS line_message_id TEXT")
             c.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS quoted_message_id TEXT")
-            c.execute("CREATE INDEX IF NOT EXISTS msg_conv ON messages(conversation_id,created_at DESC)")
-            c.execute("CREATE INDEX IF NOT EXISTS msg_line_id ON messages(line_message_id)")
             c.execute("""CREATE TABLE IF NOT EXISTS memories(
               id BIGSERIAL PRIMARY KEY,scope TEXT NOT NULL,scope_id TEXT NOT NULL,
               category TEXT DEFAULT 'general',subject TEXT DEFAULT '',content TEXT NOT NULL,
               created_by TEXT,created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())""")
-            c.execute("CREATE INDEX IF NOT EXISTS mem_scope ON memories(scope,scope_id,updated_at DESC)")
+            # Older deployments used a smaller memories schema. Add columns before
+            # creating indexes so a migration never stops the whole app startup.
+            c.execute("ALTER TABLE memories ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'user'")
+            c.execute("ALTER TABLE memories ADD COLUMN IF NOT EXISTS scope_id TEXT DEFAULT ''")
+            c.execute("ALTER TABLE memories ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'general'")
+            c.execute("ALTER TABLE memories ADD COLUMN IF NOT EXISTS subject TEXT DEFAULT ''")
+            c.execute("ALTER TABLE memories ADD COLUMN IF NOT EXISTS created_by TEXT")
+            c.execute("ALTER TABLE memories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+            c.execute("UPDATE memories SET scope='user' WHERE scope IS NULL")
+            c.execute("UPDATE memories SET scope_id='' WHERE scope_id IS NULL")
             c.execute("""CREATE TABLE IF NOT EXISTS skills(
               id BIGSERIAL PRIMARY KEY,scope TEXT DEFAULT 'company',scope_id TEXT DEFAULT 'company',
               name TEXT NOT NULL,instructions TEXT NOT NULL,created_by TEXT,
               created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'company'")
+            c.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS scope_id TEXT DEFAULT 'company'")
+            c.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS created_by TEXT")
+            c.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
             c.execute("""CREATE TABLE IF NOT EXISTS images(
               id BIGSERIAL PRIMARY KEY,conversation_id TEXT NOT NULL,user_id TEXT,
               line_message_id TEXT UNIQUE,analysis TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW())""")
@@ -58,6 +74,11 @@ def init_db():
             c.execute("CREATE INDEX IF NOT EXISTS manager_insights_idx ON manager_insights(conversation_id,status,created_at DESC)")
             c.execute("ALTER TABLE improvement_requests ADD COLUMN IF NOT EXISTS pr_number INTEGER")
             c.execute("ALTER TABLE improvement_requests ADD COLUMN IF NOT EXISTS pr_url TEXT")
+            # Indexes are deliberately last: the columns above now exist for both
+            # fresh installs and upgrades from every earlier Nami version.
+            c.execute("CREATE INDEX IF NOT EXISTS msg_conv ON messages(conversation_id,created_at DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS msg_line_id ON messages(line_message_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS mem_scope ON memories(scope,scope_id,updated_at DESC)")
         cn.commit()
 
 def save_msg(eid,cid,uid,name,role,content,mtype="text",mid=None,qid=None):
@@ -332,9 +353,16 @@ def called(m):
 
 def reply(tok,text):
     chunks=[text[i:i+4900] for i in range(0,len(text),4900)][:5]
-    requests.post("https://api.line.me/v2/bot/message/reply",
-      headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},
-      json={"replyToken":tok,"messages":[{"type":"text","text":x} for x in chunks]},timeout=30)
+    try:
+        r=requests.post("https://api.line.me/v2/bot/message/reply",
+          headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},
+          json={"replyToken":tok,"messages":[{"type":"text","text":x} for x in chunks]},timeout=30)
+        if not r.ok:
+            print("LINE reply",r.status_code,r.text[:1000],flush=True)
+        return r.ok
+    except Exception as x:
+        print("LINE reply",repr(x),flush=True)
+        return False
 
 def content(mid):
     r=requests.get(f"https://api-data.line.me/v2/bot/message/{mid}/content",
