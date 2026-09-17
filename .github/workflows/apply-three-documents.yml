@@ -2,7 +2,7 @@ name: Apply three documents
 on:
   push:
     branches: [chapi-three-documents]
-    paths: [patch_three_documents.py]
+    paths: [patch_three_documents.py, three_documents_trigger.txt]
 permissions:
   contents: write
 jobs:
