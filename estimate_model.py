@@ -11,10 +11,9 @@ def _money(v):
 
 def _clean_breakdown(value):
     s=str(value or '').strip()
-    for token in ('税込','（税込）','(税込)','要確認','・税込'):
+    for token in ('税込','（税込）','(税込)','要確認','・税込','仮','概算'):
         s=s.replace(token,'')
-    s=s.replace('仮（','（').strip(' ・/、')
-    return s
+    return s.strip(' ・/、()（）')
 
 def normalize_estimate(data):
     data=data if isinstance(data,dict) else {}
@@ -26,20 +25,13 @@ def normalize_estimate(data):
         amount=_money(raw.get('amount'))
         if amount is None and original is not None:
             amount=max(0,original-discount)
-        rows.append({
-            'key':str(raw.get('key') or ''),
-            'label':str(raw.get('label') or '要確認'),
-            'amount':amount,
-            'original_amount':original,
-            'discount_amount':discount,
-            'breakdown':_clean_breakdown(raw.get('breakdown')),
-            'status':str(raw.get('status') or ('known' if amount is not None else 'unknown')),
-        })
+        rows.append({'key':str(raw.get('key') or ''),'label':str(raw.get('label') or '要確認'),'amount':amount,'original_amount':original,'discount_amount':discount,'breakdown':_clean_breakdown(raw.get('breakdown')),'status':str(raw.get('status') or ('known' if amount is not None else 'unknown'))})
     known=[r['amount'] for r in rows if r['amount'] is not None]
     total=sum(known) if known else None
     return {'property':str(data.get('property') or '物件名要確認'),'move_in':str(data.get('move_in') or ''),'items':rows,'total':total,'total_complete':bool(rows) and all(r['amount'] is not None for r in rows),'notes':[str(x) for x in (data.get('notes') or [])][:6]}
 
 def estimate_to_text(data):
+    """Compact LINE/customer text. Internal notes never leak into this output."""
     d=normalize_estimate(data); out=['【初期費用概算】',d['property']]
     if d['move_in']: out.append('入居日：'+d['move_in'])
     for r in d['items']:
@@ -53,5 +45,5 @@ def estimate_to_text(data):
             out.append('  ↳ '+' / '.join(bits))
     total_label='合計' if d['total_complete'] else '現時点概算'
     out.append(total_label+'：'+('要確認' if d['total'] is None else f"{d['total']:,}円"))
-    if not d['total_complete']: out.append('※ 未確定項目があるため、金額が変動する場合があります。')
+    # No customer-facing footnotes. Unknown rows themselves communicate what remains unresolved.
     return '\n'.join(out)
