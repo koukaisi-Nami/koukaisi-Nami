@@ -696,22 +696,25 @@ def three_document_command(text,uid,cid,qid=None):
     wants_image=kind=="estimate" and bool(re.search(r"(画像|イメージ|一枚|1枚|写真にして)",clean,re.I))
     wants_pdf=bool(re.search(r"(PDF|pdf|書類|発行)",clean))
     if kind=="estimate" and not wants_image and not wants_pdf:
+        prompt=("募集図面の読取結果から、お客様へそのままLINE転送できる初期費用の概算を作成してください。短く見やすく丁寧にしてください。Markdown表、計算過程、内部事情、前回回答への言及は禁止です。\n"
+                "【初期費用の概算】、物件名・号室、確定できる費用を項目：金額円で1行ずつ、現時点の合計、金額不明だけ【別途確認】、短い注意書きの順にしてください。\n"
+                "読めない金額は絶対に推測せず合計に含めないでください。日割り等は入居日不明なら別途確認にしてください。保存済みの会社ルールがある場合は優先してください。")
         if qid:
             blob,mime=content(qid)
             if blob:
                 if blob[:5]==b"%PDF-":mime="application/pdf"
-                prompt=("この募集図面から、お客様へそのままLINE転送できる初期費用の概算を作成してください。短く見やすく丁寧にしてください。Markdown表、見出し記号、計算過程、内部事情、前回回答への言及は禁止です。\n"
-                        "【初期費用の概算】、物件名・号室、確定できる費用を項目：金額円で1行ずつ、現時点の合計、金額不明だけ【別途確認】、短い注意書きの順にしてください。\n"
-                        "図面から読めない金額は絶対に推測せず合計に含めないでください。日割り等は入居日不明なら別途確認にしてください。保存済みの会社ルールがある場合は優先してください。")
                 return analyze(blob,mime,uid,cid,question=prompt)
-        return None
+        latest=image_analysis(cid) or ""
+        if latest:
+            return ask(prompt+"\n\n【直前の募集図面の読取結果】\n"+latest,uid,cid)
+        return "募集図面を送ってから『ナミ、見積もり教えて』でOKだよ。画像にリプライしなくても大丈夫。"
     media_summary=""
     if qid:
         blob,mime=content(qid)
         if blob:
             if blob[:5]==b"%PDF-":mime="application/pdf"
             media_summary=analyze(blob,mime,uid,cid,question="物件名、号室、賃料、管理費/共益費、敷金、礼金、保証料、仲介手数料、保険、鍵交換、クリーニング、24時間サポート、その他必須費用を帳票用に抽出。各金額と条件を明記。推測禁止。")
-    elif re.search(r"(この|図面|画像|PDF|資料)",clean,re.I):media_summary=image_analysis(cid) or ""
+    elif re.search(r"(この|これ|それ|図面|画像|写真|PDF|資料)",clean,re.I):media_summary=image_analysis(cid) or ""
     if kind=="estimate" and wants_image:
         if not media_summary:return "見積もり画像を作る募集図面がないよ。図面の画像/PDFにリプライして『ナミ、見積もり画像作って』と送って。"
         return ("__ESTIMATE_IMAGE__",media_summary)
