@@ -1,0 +1,44 @@
+name: Hotfix regex v2
+on:
+  push:
+    branches: [chapi/hotfix-regex-v2]
+    paths:
+      - '.github/workflows/hotfix-regex-v2.yml'
+jobs:
+  fix-and-test:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi/hotfix-regex-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply actual app hotfix
+        run: python scripts/hotfix_improvement_regex.py
+      - name: Verify runtime regex and compile
+        run: |
+          python -m py_compile app.py
+          python - <<'PY'
+          import ast, re
+          src=open('app.py',encoding='utf-8').read()
+          tree=ast.parse(src)
+          fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='improvement_intent')
+          ns={'re':re}
+          exec(compile(ast.Module(body=[fn],type_ignores=[]),'<test>','exec'),ns)
+          f=ns['improvement_intent']
+          assert f('改善して') is True
+          assert f('おはよう') is False
+          assert f('反映して') is True
+          print('improvement_intent executes without regex error')
+          PY
+      - name: Commit fixed app to branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix malformed improvement intent regex in runtime'
+          git push
