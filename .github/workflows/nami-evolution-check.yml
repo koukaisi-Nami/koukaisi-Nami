@@ -16,5 +16,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --disable-pip-version-check pytest
-      - run: python -m py_compile nami_evolution.py nami_update_manifest.py
-      - run: python -m pytest -q tests/test_nami_evolution.py
+      - name: Compile Nami 3.0 policy modules
+        run: python -m py_compile nami_evolution.py nami_update_manifest.py nami_memory_engine.py nami_evaluator.py nami_health.py
+      - name: Run deterministic Nami 3.0 tests
+        run: python -m pytest -q tests/test_nami_evolution.py tests/test_nami_memory_engine.py tests/test_nami_evaluator_health.py
