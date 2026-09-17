@@ -15,18 +15,23 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('app.py')
-          s=p.read_text()
-          old='''def batch_estimates_using_single(groups,user_instruction,uid,cid):\n    \"\"\"Run the same single-property estimate prompt once per property.\"\"\"\n    answers=[]\n    for g in groups:\n        p=g['property']\n        analyses='\\n---\\n'.join(a.get('analysis','') for a in g['attachments'])\n        material=f\"物件名：{p.get('name','')}\\n号室：{p.get('room','')}\\n住所：{p.get('address','')}\\n【募集図面の読取結果】\\n{analyses}\"\n        answers.append(ai(single_estimate_prompt(user_instruction)+\"\\n\\n\"+material,uid,cid))\n    return answers\n'''
-          new='''def batch_estimates_using_single(groups,user_instruction,uid,cid):\n    \"\"\"Generate each property independently with the exact single-property flow.\"\"\"\n    answers=[]\n    total=len(groups)\n    for index,g in enumerate(groups,1):\n        p=g['property']\n        analyses='\\n---\\n'.join(a.get('analysis','') for a in g['attachments'])\n        material=f\"物件名：{p.get('name','')}\\n号室：{p.get('room','')}\\n住所：{p.get('address','')}\\n【募集図面の読取結果】\\n{analyses}\"\n        instruction=(user_instruction or '')+f\"\\nこれは全{total}件中{index}件目。ほかの物件と混ぜず、この1物件だけを単独見積もりとして計算・出力すること。\"\n        estimate=ai(single_estimate_prompt(instruction)+\"\\n\\n\"+material,uid,cid)\n        label=p.get('name') or p.get('address') or f'{index}件目'\n        room=p.get('room') or ''\n        header=f\"【{index}/{total} {label}{(' '+room) if room else ''}】\"\n        answers.append(header+\"\\n\"+estimate)\n    return answers\n'''
-          if old not in s:
-              raise SystemExit('target batch function not found')
+          p=Path('app.py'); s=p.read_text()
+
+          old='''def is_batch_estimate_command(text):\n    return bool(re.search(r"(まとめて|一括|全部|複数).*(見積|初期費用)|(見積|初期費用).*(まとめて|一括|全部|複数)",(text or ''),re.I))\n'''
+          new='''def is_batch_estimate_command(text):\n    t=text or ''\n    batch_word=r"(?:まとめて|一括|全部|複数|[0-9０-９一二三四五六七八九十]+\\s*(?:件|物件)(?:分)?)"\n    return bool(re.search(batch_word+r".*(?:見積|初期費用)|(?:見積|初期費用).*"+batch_word,t,re.I))\n'''
+          if old not in s: raise SystemExit('batch command target not found')
           s=s.replace(old,new,1)
-          old2='''        saved_ans=\"\\n\\n\".join(ans) if isinstance(ans,(list,tuple)) else ans\n        save_msg(\"assistant:\"+eid,cid,\"bot\",\"航海士ナミ\",\"assistant\",saved_ans)\n        reply(e.get(\"replyToken\"),ans)\n'''
-          new2='''        saved_ans=\"\\n\\n\".join(ans) if isinstance(ans,(list,tuple)) else ans\n        save_msg(\"assistant:\"+eid,cid,\"bot\",\"航海士ナミ\",\"assistant\",saved_ans)\n        if isinstance(ans,list):\n            # LINE reply is capped at 5 messages. Reply with the first batch, then push the rest one by one.\n            first=ans[:5]\n            reply(e.get(\"replyToken\"),first)\n            target=line_target(e)\n            for item in ans[5:]:\n                push_line(target,item)\n        else:\n            reply(e.get(\"replyToken\"),ans)\n'''
-          if old2 not in s:
-              raise SystemExit('target reply block not found')
-          s=s.replace(old2,new2,1)
+
+          marker='''def clear_estimate_batch(cid):\n    try:\n        with db() as cn:\n            with cn.cursor() as c:c.execute("DELETE FROM estimate_batch_items WHERE conversation_id=%s",(cid,))\n            cn.commit()\n    except Exception as x:print("estimate_batch_clear",repr(x),flush=True)\n\n'''
+          helper='''def group_attachments(items):\n    \"\"\"Split saved analyses into individual properties, including several sheets inside one image.\"\"\"\n    if not items:return [],True\n    source='\\n\\n'.join(f"【資料{i+1}】\\n{x.get('analysis','')}" for i,x in enumerate(items))\n    prompt=\"\"\"募集図面の読取結果を物件単位に完全分離する。1枚の画像内に複数の募集図面がある場合も必ず全物件を分ける。別物件の金額を混ぜない。JSONのみで返す。形式: {\\\"properties\\\":[{\\\"name\\\":\\\"物件名\\\",\\\"room\\\":\\\"号室\\\",\\\"address\\\":\\\"住所\\\",\\\"analysis\\\":\\\"その物件だけの賃料・管理費・敷礼・保証料・保険・鍵・サポート・その他費用等\\\"}]}。物件名不明でも賃料や間取り等から別図面と判断できれば別要素にする。推測で金額を補わない。\"\"\"\n    try:\n        payload={"model":MODEL,"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":source[:12000]}]}],"max_output_tokens":2200}\n        r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)\n        if not r.ok:raise RuntimeError(f"split {r.status_code}")\n        d=r.json(); raw=d.get("output_text","")\n        if not raw:\n            vals=[]\n            for out in d.get("output",[]):\n                if out.get("type")=="message":\n                    for z in out.get("content",[]):\n                        if z.get("type") in ("output_text","text") and z.get("text"):vals.append(z["text"])\n            raw='\\n'.join(vals)\n        raw=re.sub(r"^```(?:json)?\\s*|\\s*```$","",raw.strip())\n        props=json.loads(raw).get("properties",[])\n        groups=[]\n        for prop in props:\n            analysis=(prop.get("analysis") or '').strip()\n            if not analysis:continue\n            groups.append({"property":{"name":prop.get("name",''),"room":prop.get("room",''),"address":prop.get("address",'')},"attachments":[{"analysis":analysis}]})\n        return groups,(len(groups)==0)\n    except Exception as x:\n        print("group_attachments",repr(x),flush=True)\n        # Safe fallback: treat each uploaded attachment independently rather than mixing them.\n        groups=[]\n        for i,item in enumerate(items,1):\n            groups.append({"property":{"name":f"{i}件目","room":"","address":""},"attachments":[item]})\n        return groups,False\n\n'''
+          if 'def group_attachments(items):' not in s:
+              if marker not in s: raise SystemExit('group insert marker not found')
+              s=s.replace(marker,marker+helper,1)
+
+          old_prompt='''資料を高精度で詳細に解析。小さい文字・表・注記も確認する。\n賃貸募集図面なら物件名、号室、所在地、交通、間取り、面積、賃料、管理費、敷金、礼金、保証金、契約期間、保証会社、初回/月額保証料、火災保険、損保、損害保険、家財保険、住宅保険、借家人賠償責任保険、少額短期保険、保険料、鍵交換、24時間/安心/緊急サポート、クリーニング、その他初期/月額費用、入居日、設備、特約、AD等を抽出。保険は名称が火災保険でなくても住宅・家財・借家人賠償に関する記載と金額を必ず拾う。'''
+          new_prompt='''資料を高精度で詳細に解析。小さい文字・表・注記も確認する。画像内に複数の募集図面・複数物件が写っている場合は、1件だけ選ばず全物件をそれぞれ独立して読み取り、物件ごとに明確に分ける。別物件の金額・条件を絶対に混ぜない。\n賃貸募集図面なら各物件について物件名、号室、所在地、交通、間取り、面積、賃料、管理費、敷金、礼金、保証金、契約期間、保証会社、初回/月額保証料、火災保険、損保、損害保険、家財保険、住宅保険、借家人賠償責任保険、少額短期保険、保険料、鍵交換、24時間/安心/緊急サポート、クリーニング、その他初期/月額費用、入居日、設備、特約、AD等を抽出。保険は名称が火災保険でなくても住宅・家財・借家人賠償に関する記載と金額を必ず拾う。'''
+          if old_prompt not in s: raise SystemExit('analyze prompt target not found')
+          s=s.replace(old_prompt,new_prompt,1)
           p.write_text(s)
           PY
       - name: Syntax check
@@ -37,5 +42,5 @@ jobs:
           git config user.email github-actions@github.com
           git add app.py
           git diff --cached --quiet && exit 0
-          git commit -m "Make multi-property estimates sequential and isolated"
+          git commit -m "Handle multi-property estimate requests and collage sheets"
           git push
