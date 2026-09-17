@@ -399,18 +399,36 @@ def history(cid,n=CHAT_HISTORY_COUNT):
     except: return []
 
 def add_memory(scope,sid,cat,subject,content,uid):
-    if not content.strip():return
+    """長期記憶を安全に保存し、同一内容は重複登録せず最終参照日時だけ更新する。"""
+    if content is None:
+        return
+    value=str(content).strip()
+    if not value:
+        return
     try:
+        scope=str(scope).strip()
+        sid=str(sid).strip()
+        category=str(cat or "general").strip()
+        title=str(subject or "").strip()
         with db() as cn:
             with cn.cursor() as c:
-                # avoid exact duplicates
-                c.execute("""SELECT id FROM memories WHERE scope=%s AND scope_id=%s
-                AND lower(content)=lower(%s) LIMIT 1""",(scope,sid,content.strip()))
-                if not c.fetchone():
-                    c.execute("""INSERT INTO memories(scope,scope_id,category,subject,content,created_by)
-                    VALUES(%s,%s,%s,%s,%s,%s)""",(scope,sid,cat,subject,content.strip(),uid))
+                c.execute("""SELECT id FROM memories
+                    WHERE scope=%s AND scope_id=%s
+                    AND lower(regexp_replace(trim(content), E'\\s+', ' ', 'g'))=
+                        lower(regexp_replace(trim(%s), E'\\s+', ' ', 'g'))
+                    ORDER BY id LIMIT 1""", (scope,sid,value))
+                row=c.fetchone()
+                if row:
+                    c.execute("""UPDATE memories SET updated_at=NOW()
+                        WHERE id=%s""", (row[0],))
+                else:
+                    c.execute("""INSERT INTO memories
+                        (scope,scope_id,category,subject,content,created_by,updated_at)
+                        VALUES(%s,%s,%s,%s,%s,%s,NOW())""",
+                        (scope,sid,category,title,value,uid))
             cn.commit()
-    except Exception as x: print("add_memory",repr(x),flush=True)
+    except Exception as x:
+        print("add_memory",repr(x),flush=True)
 
 def memory_terms(text):
     raw=(text or "").lower(); terms=[]
@@ -421,22 +439,45 @@ def memory_terms(text):
     return list(dict.fromkeys(terms))[:12]
 
 def mems(uid,cid,query="",limit=MEMORY_CONTEXT_COUNT):
-    """All memories remain stored; this ranks the small working set for one reply."""
+    """保存済みの長期記憶を広く検索し、返信に必要なものだけを順位付けして返す。"""
+    try:
+        wanted=max(1,int(limit))
+    except Exception:
+        wanted=MEMORY_CONTEXT_COUNT
     try:
         with db() as cn:
             with cn.cursor() as c:
-                c.execute("""SELECT scope,category,subject,content FROM memories WHERE
-                (scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s)
-                OR (scope='company' AND scope_id='company')
-                ORDER BY updated_at DESC LIMIT 160""",(uid,cid)); rows=c.fetchall()
-        terms=memory_terms(query)
+                c.execute("""SELECT scope,category,subject,content,updated_at FROM memories
+                    WHERE (scope='user' AND scope_id=%s)
+                       OR (scope='conversation' AND scope_id=%s)
+                       OR (scope='company' AND scope_id='company')
+                    ORDER BY updated_at DESC NULLS LAST, id DESC
+                    LIMIT 5000""",(str(uid),str(cid)))
+                rows=c.fetchall()
+        terms=[str(t).lower() for t in memory_terms(query) if str(t).strip()]
         def score(row):
-            scope,category,subject,content=row; hay=(str(category)+" "+str(subject)+" "+str(content)).lower()
-            hits=sum(8 if term in (subject or "").lower() else 3 for term in terms if term in hay)
+            scope,category,subject,content,updated_at=row
+            subject_text=str(subject or "").lower()
+            hay=(str(category or "")+" "+subject_text+" "+str(content or "")).lower()
+            hits=0
+            for term in terms:
+                if term in hay:
+                    hits+=8 if term in subject_text else 3
             return hits+{"conversation":2,"user":1,"company":0}.get(scope,0)
-        ranked=sorted(rows,key=score,reverse=True); relevant=[r for r in ranked if score(r)>2]
-        return (relevant+[r for r in ranked if r not in relevant])[:limit]
-    except:return []
+        ranked=sorted(rows,key=score,reverse=True)
+        result=[]
+        seen=set()
+        for row in ranked:
+            key=(row[0],str(row[1] or ""),str(row[2] or ""),str(row[3] or "").strip().lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(row[:4])
+            if len(result)>=wanted:
+                break
+        return result
+    except Exception:
+        return []
 
 def add_skill(name,body,uid):
     try:
@@ -875,15 +916,30 @@ Markdown表、詳細解析、計算過程、仲介手数料内訳は禁止。管
     return media_ai(img,mime,uid,cid,prompt)
 
 def learn_important(text,uid,cid):
-    # Conservative automatic memory: clear self/customer/company facts only.
-    t=text.strip()
-    if len(t)<2 or len(t)>500:return
-    personal=re.search(r"(俺|私|僕|自分|わたし).{0,20}(好き|嫌い|希望|住んで|会社|仕事|誕生日|名前)",t)
-    customer=re.search(r"(.+?さん).{0,30}(家賃|予算|入居|ペット|犬|猫|間取り|エリア|駅|審査|法人|個人)",t)
-    company=re.search(r"(弊社|うちの会社|Steer Ship).{0,80}(手数料|ルール|料金|見積|請求|フロー)",t,re.I)
-    if personal:add_memory("user",uid,"profile","本人情報",t,uid)
-    elif customer:add_memory("conversation",cid,"customer",customer.group(1),t,uid)
-    elif company:add_memory("company","company","company_knowledge","会社情報",t,uid)
+    """会話から本人・顧客・会社に関する再利用価値の高い事実だけを長期記憶へ保存する。"""
+    if text is None:
+        return
+    t=str(text).strip()
+    if len(t)<2 or len(t)>500:
+        return
+    personal=re.search(
+        r"(?:俺|私|僕|自分|わたし|こちら).{0,35}(?:好き|嫌い|希望|住んで|住まい|会社|仕事|職業|勤務先|誕生日|名前|家族|ペット|犬|猫|予算|年齢)",
+        t,re.I)
+    personal_assertion=re.search(
+        r"(?:名前|住まい|住んでいる場所|誕生日|勤務先|職業|ペット|犬|猫|好み|予算)\s*(?:は|が|:|：)",
+        t,re.I)
+    customer=re.search(
+        r"(.{1,50}?さん).{0,50}(?:家賃|予算|入居|ペット|犬|猫|間取り|エリア|駅|審査|法人|個人|希望|条件)",
+        t,re.I)
+    company=re.search(
+        r"(?:弊社|うちの会社|Steer Ship).{0,100}(?:手数料|ルール|料金|見積|請求|フロー|営業時間|対応|禁止|必須)",
+        t,re.I)
+    if company:
+        add_memory("company","company","company_knowledge","会社情報",t,uid)
+    elif customer:
+        add_memory("conversation",cid,"customer",customer.group(1).strip(),t,uid)
+    elif personal or personal_assertion:
+        add_memory("user",uid,"profile","本人情報",t,uid)
 
 
 def save_manager_insight(cid,uid,itype,severity,summary):
@@ -964,16 +1020,28 @@ speak=trueはseverity 4以上だけ。messageは事実→理由→具体的な�
 
 
 def explicit_learning(text,uid):
-    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",text.strip(),flags=re.I)
+    t=re.sub(r"^(ナミ|なみ|nami)[、,\s]*","",str(text or "").strip(),flags=re.I)
+    if not t:
+        return None
     m=re.search(r"(.{1,50}?)(?:の作り方|のやり方|のルール)[：:、,\s]*(.+)",t,re.S)
     if m:
-        add_skill(m.group(1)+"の作り方",m.group(2),uid);return f"学習したよ🧭\n【{m.group(1)}の作り方】\n{m.group(2)}"
+        name=m.group(1).strip()
+        rule=m.group(2).strip()
+        if rule:
+            add_skill(name+"の作り方",rule,uid)
+            return f"学習したよ🧭\n【{name}の作り方】\n{rule}"
     m=re.search(r"(?:学習して|今後はこれで|このやり方を覚えて)[：:、,\s]*(.+)",t,re.S)
     if m:
-        add_skill("業務ルール",m.group(1),uid);return "業務ルールとして学習したよ🧭"
+        rule=m.group(1).strip()
+        if rule:
+            add_skill("業務ルール",rule,uid)
+            return "業務ルールとして学習したよ🧭"
     m=re.search(r"(.+?)って覚えて(?:おいて)?[！!。.]?$",t,re.S)
     if m:
-        add_memory("user",uid,"general","",m.group(1),uid);return f"覚えたよ🧭\n「{m.group(1)}」"
+        fact=m.group(1).strip()
+        if fact:
+            add_memory("user",uid,"general","",fact,uid)
+            return f"覚えたよ🧭\n「{fact}」"
     return None
 
 
