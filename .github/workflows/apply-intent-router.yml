@@ -1,0 +1,52 @@
+name: Apply intent router
+on:
+  push:
+    branches: [chapi/intent-router-v1]
+permissions:
+  contents: write
+jobs:
+  patch-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi/intent-router-v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply runtime patch
+        run: python scripts/patch_intent_router.py
+      - name: Compile
+        run: python -m py_compile app.py
+      - name: Static safety and routing checks
+        run: |
+          python - <<'PY'
+          import ast
+          s=open('app.py').read(); ast.parse(s)
+          assert 'def semantic_intent_route(' in s
+          assert 'semantic_route = semantic_intent_route(text,uid,cid)' in s
+          assert 'owner_self_improve = semantic_route == "self_improve"' in s
+          assert 'ambiguous_change = semantic_route == "ask"' in s
+          assert 'DELETE FROM memories' not in s.upper()
+          assert 'DROP TABLE' not in s.upper()
+          # Ordinary chat is gated before the upper-AI classifier.
+          fn=s[s.index('def semantic_intent_route('):s.index('def improvement_plan(',s.index('def semantic_intent_route('))]
+          assert 'if not re.search' in fn and 'return "chat"' in fn
+          # Representative examples are embedded in the classifier contract.
+          assert 'Xと送ったらYと返すようにして' in fn
+          assert '俺のこと船長って呼んで' in fn
+          print('intent router safety checks OK')
+          PY
+      - name: Existing supervisor tests
+        run: |
+          python -m pip install -q pytest
+          pytest -q test_nami_supervisor.py tests/test_supervisor_review_runtime.py
+          python -m unittest tests.test_owner_guard
+      - name: Commit patched runtime
+        run: |
+          if git diff --quiet -- app.py; then exit 0; fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app.py
+          git commit -m 'Wire semantic change-intent router into runtime'
+          git push
