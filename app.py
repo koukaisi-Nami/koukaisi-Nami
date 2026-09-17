@@ -867,12 +867,22 @@ def webhook():
             taught=explicit_learning(text,uid)
             if taught: ans=taught
             else:
-                # If LINE quotedMessageId points to an analyzed image, use it; otherwise attach latest image analysis
-                quoted=image_analysis(cid,qid) if qid else None
-                latest=image_analysis(cid) if re.search(r"(この|図面|画像|写真|見積)",text) else None
-                chosen=quoted or latest
-                extra=f"\n【参照画像の解析】\n{chosen}" if chosen else ""
-                ans=ai(text,uid,cid,extra=extra)
+                # Reply to an image/PDF: fetch the original quoted media and answer from the actual bytes.
+                # This avoids relying only on an older saved summary when the user asks a new question.
+                quoted_saved=image_analysis(cid,qid) if qid else None
+                quoted_blob=quoted_mime=None
+                if qid:
+                    quoted_blob,quoted_mime=content(qid)
+                if quoted_blob:
+                    # LINE may return application/octet-stream for files, so detect PDF by signature too.
+                    is_quoted_pdf=(quoted_blob[:5]==b"%PDF-") or (quoted_mime and "pdf" in quoted_mime.lower())
+                    media_mime="application/pdf" if is_quoted_pdf else quoted_mime
+                    ans=analyze(quoted_blob,media_mime,uid,cid,question=text)
+                else:
+                    latest=image_analysis(cid) if re.search(r"(この|図面|画像|写真|PDF|資料|見積)",text,re.I) else None
+                    chosen=quoted_saved or latest
+                    extra=f"\n【参照資料の解析】\n{chosen}" if chosen else ""
+                    ans=ai(text,uid,cid,extra=extra)
 
         save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",ans)
         reply(e.get("replyToken"),ans)
