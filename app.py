@@ -238,16 +238,44 @@ def validate_candidate(src):
         errors.append("秘密鍵らしき文字列を検出")
     return errors
 
-def codegen_improvement(req_text,uid,cid):
-    current,_=repo_file()
-    instruction="""本番稼働中のLINE Bot『航海士ナミ』を改修する。
-要求を実装した完全なapp.pyだけを返す。markdown禁止。
-既存機能は絶対に削除しない。DBは後方互換のALTER/CREATE IF NOT EXISTSを使う。
-秘密情報をコードに埋め込まない。自己改善・営業部長モードも維持する。
+def improvement_targets(req_text,src):
+    """Select only the functions relevant to an approved self-improvement."""
+    text=(req_text or "").lower()
+    groups=[
+      (("記憶","覚え","学習","メンバー","人","プロフィール"),
+       ["add_memory","mems","ctx","learn_important","explicit_learning"]),
+      (("返信","line","グループ","メンション","呼びかけ"),
+       ["called","reply","webhook","manager_review"]),
+      (("画像","図面","写真"),["content","image_analysis","analyze","webhook"]),
+      (("見積","請求","物件","賃貸","審査","契約"),["ai","analyze","manager_review","webhook"]),
+      (("自己改善","コード","github","pr"),
+       ["improvement_intent","improvement_plan","codegen_improvement","create_pr","merge_pr"]),
+      (("db","データベース","postgres","保存"),["init_db","save_msg","save_image","history"]),
+    ]
+    names=[]
+    for words,funcs in groups:
+        if any(w in text for w in words): names.extend(funcs)
+    if not names: names=["ai","ctx","webhook"]
+    tree=ast.parse(src); lines=src.splitlines(keepends=True); found={}
+    for node in tree.body:
+        if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)) and node.name in names:
+            found[node.name]="".join(lines[node.lineno-1:node.end_lineno])
+    ordered={name:found[name] for name in dict.fromkeys(names) if name in found}
+    return dict(list(ordered.items())[:6])
+
+def targeted_candidate(req_text,current):
+    targets=improvement_targets(req_text,current)
+    if not targets: raise RuntimeError("対象機能を特定できなかった")
+    instruction="""本番稼働中のLINE Bot『航海士ナミ』を安全に部分改修する。
+渡された関数だけを変更対象にし、それ以外の機能・記憶・DBデータは絶対に削除しない。
+秘密情報をコードへ埋め込まない。DB変更は後方互換のALTER/CREATE IF NOT EXISTSを使う。
+出力はJSONのみ。形式は {"replacements":[{"function":"関数名","new":"その関数を丸ごと置換するPythonコード"}],"summary":"短い説明"}。
+変更不要な関数はreplacementsに含めない。functionは渡された関数名だけに限る。
 """
+    selected="\n\n".join(f"【{name}】\n{body}" for name,body in targets.items())
     payload={"model":MODEL,"instructions":instruction,
       "input":[{"role":"user","content":[{"type":"input_text","text":
-        "【改修要求】\n"+req_text+"\n\n【現在のapp.py】\n"+current}]}]}
+        "【改修要求】\n"+req_text+"\n\n【変更可能な関数だけ】\n"+selected}]}]}
     r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
                     json=payload,timeout=180)
     if not r.ok: raise RuntimeError(f"AI codegen failed {r.status_code}")
@@ -259,8 +287,25 @@ def codegen_improvement(req_text,uid,cid):
                 for z in item.get("content",[]):
                     if z.get("type")=="output_text": xs.append(z.get("text",""))
         out="\n".join(xs)
-    out=re.sub(r"^```(?:python)?\s*|\s*```$","",out.strip())
-    return out
+    out=re.sub(r"^```(?:json)?\s*|\s*```$","",out.strip())
+    try: data=json.loads(out)
+    except json.JSONDecodeError as x: raise RuntimeError("部分改修のJSONが不正: "+str(x))
+    replacements=data.get("replacements",[])
+    if not replacements: raise RuntimeError("変更内容が返されなかった")
+    candidate=current
+    for item in replacements:
+        name=item.get("function",""); new=item.get("new","").strip()
+        old=targets.get(name)
+        if not old or not new.startswith("def "+name+"("):
+            raise RuntimeError("許可外の関数変更を検出")
+        if candidate.count(old)!=1:
+            raise RuntimeError("変更元関数を安全に特定できなかった")
+        candidate=candidate.replace(old,new+"\n",1)
+    return candidate
+
+def codegen_improvement(req_text,uid,cid):
+    current,_=repo_file()
+    return targeted_candidate(req_text,current)
 
 def create_pr(req_text):
     candidate=codegen_improvement(req_text,"system","system")
