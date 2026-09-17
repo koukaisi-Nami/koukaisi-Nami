@@ -17,12 +17,14 @@ if old in s:
 elif new not in s:
     raise SystemExit('merge approval anchor missing')
 
-# Gate improvement creation. Non-owner messages continue to ordinary chat rather than code mutation.
-old='elif improvement_intent(text):\n            plan=improvement_plan(text,uid,cid)'
-new='elif improvement_intent(text) and can_self_improve(uid):\n            plan=improvement_plan(text,uid,cid)'
-if old in s:
-    s=s.replace(old,new,1)
-elif new not in s:
+# Gate improvement creation. Support both the legacy direct intent route and the
+# supervisor route. Both remain fail-closed behind can_self_improve(uid).
+legacy_old='elif improvement_intent(text):\n            plan=improvement_plan(text,uid,cid)'
+legacy_new='elif improvement_intent(text) and can_self_improve(uid):\n            plan=improvement_plan(text,uid,cid)'
+supervisor_new='elif routed_intent=="self_improve" and can_self_improve(uid):\n            plan=improvement_plan(text,uid,cid)'
+if legacy_old in s:
+    s=s.replace(legacy_old,legacy_new,1)
+elif legacy_new not in s and supervisor_new not in s:
     raise SystemExit('improvement creation anchor missing')
 
 p.write_text(s)
