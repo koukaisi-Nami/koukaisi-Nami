@@ -1,0 +1,6 @@
+- semantic aliases
+- guarantee deposit handling
+- unknown initial fee preservation
+- insurance aliases
+- insurance 20,000 fallback
+- no duplicate counting

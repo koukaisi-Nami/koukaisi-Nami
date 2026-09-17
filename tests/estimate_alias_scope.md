@@ -1,0 +1,1 @@
+Scope: semantic aliases, unknown fee preservation, deposit/guarantee-deposit disambiguation, insurance fallback, duplicate prevention.
