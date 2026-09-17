@@ -1,7 +1,7 @@
-name: Apply estimate fallback routing
+name: Test forced estimate tool
 on:
   push:
-    branches: [fix/nami-estimate-memory]
+    branches: [fix/force-estimate-tool]
   workflow_dispatch:
 permissions:
   contents: write
@@ -11,25 +11,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/nami-estimate-memory
+          ref: fix/force-estimate-tool
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install renderer dependencies
-        run: pip install reportlab pillow
-      - name: Apply routing patch
+        run: pip install reportlab pillow pymupdf
+      - name: Apply forced routing patch
         run: python scripts/patch_estimate_fallback.py
       - name: Syntax and estimate regression
         run: |
           python -m py_compile app.py structured_estimate_runtime.py estimate_model.py estimate_document.py
           python -m unittest tests.test_estimate_model tests.test_estimate_renderer -v
-          grep -q 'structured_estimate_fallback' app.py
-          grep -q 'latest_material=image_analysis' app.py
-      - name: Commit actual runtime change
+          grep -q 'structured_estimate_forced' app.py
+          grep -q 'Estimate is a tool, never a free-form chat answer' app.py
+          python - <<'PY'
+          from estimate_model import normalize_estimate, estimate_to_text
+          from estimate_document import make_estimate_document, make_estimate_image
+          d=normalize_estimate({'property':'ALTERNA銀座 904号室','move_in':'15日','items':[
+            {'key':'current_rent','label':'当月前家賃','amount':142400,'breakdown':'日割り16日分'},
+            {'key':'next_rent','label':'次月前家賃','amount':267000},
+            {'key':'brokerage','label':'仲介手数料','original_amount':273900,'discount_amount':136950,'amount':136950,'breakdown':'半額'}]})
+          text=estimate_to_text(d)
+          assert '日割り16日分' in text and '通常273,900円' in text and '割引136,950円' in text
+          assert d['total']==546350
+          assert len(make_estimate_document(d).getvalue())>1000
+          assert len(make_estimate_image(d).getvalue())>1000
+          print('REAL_CASE_OK')
+          PY
+      - name: Commit actual app runtime
         run: |
           git config user.name 'nami-ci'
           git config user.email 'nami-ci@users.noreply.github.com'
           git add app.py
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'Route recent listing estimates through structured runtime'
-          git push origin HEAD:fix/nami-estimate-memory
+          git commit -m 'Force estimate requests through canonical tool'
+          git push origin HEAD:fix/force-estimate-tool
