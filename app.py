@@ -13,6 +13,7 @@ OPENAI_KEY=os.getenv("OPENAI_API_KEY","")
 DB_URL=os.getenv("DATABASE_URL","")
 MODEL=os.getenv("OPENAI_MODEL","gpt-5.6-luna")
 OA="https://api.openai.com/v1/responses"
+HTTP=requests.Session()
 
 # LINE承認式の自己改善
 GITHUB_TOKEN=os.getenv("GITHUB_TOKEN","")
@@ -21,9 +22,9 @@ GITHUB_BRANCH=os.getenv("GITHUB_BRANCH","main")
 GITHUB_APP_PATH=os.getenv("GITHUB_APP_PATH","app.py")
 SELF_IMPROVE=os.getenv("SELF_IMPROVE","false").lower()=="true"
 DASHBOARD_PASSWORD=os.getenv("NAMI_DASHBOARD_PASSWORD","")
-CHAT_HISTORY_COUNT=10
-MEMORY_CONTEXT_COUNT=8
-SKILL_CONTEXT_COUNT=5
+CHAT_HISTORY_COUNT=6
+MEMORY_CONTEXT_COUNT=5
+SKILL_CONTEXT_COUNT=4
 
 def db(): return psycopg.connect(DB_URL)
 
@@ -579,17 +580,23 @@ def ids(e):
 
 def grouped(e):return e.get("source",{}).get("type") in ("group","room")
 
+PROFILE_CACHE={}
 def name(e):
     s=e.get("source",{}); uid=s.get("userId")
     if not uid:return "ユーザー"
+    now=time.time(); cached=PROFILE_CACHE.get(uid)
+    if cached and now-cached[0] < 600:return cached[1]
     try:
         h={"Authorization":f"Bearer {TOKEN}"}
         if s.get("type")=="group":u=f"https://api.line.me/v2/bot/group/{s['groupId']}/member/{uid}"
         elif s.get("type")=="room":u=f"https://api.line.me/v2/bot/room/{s['roomId']}/member/{uid}"
         else:u=f"https://api.line.me/v2/bot/profile/{uid}"
-        r=requests.get(u,headers=h,timeout=10)
-        return r.json().get("displayName","ユーザー") if r.ok else "ユーザー"
-    except:return "ユーザー"
+        r=HTTP.get(u,headers=h,timeout=5)
+        result=r.json().get("displayName","ユーザー") if r.ok else "ユーザー"
+        PROFILE_CACHE[uid]=(now,result)
+        if len(PROFILE_CACHE)>500: PROFILE_CACHE.clear()
+        return result
+    except:return cached[1] if cached else "ユーザー"
 
 def called(m):
     if re.search(r"(ナミ|なみ|nami)",m.get("text",""),re.I):return True
@@ -601,7 +608,7 @@ def reply(tok,text):
     else:
         chunks=[str(text)[i:i+4900] for i in range(0,len(str(text)),4900)][:5]
     try:
-        r=requests.post("https://api.line.me/v2/bot/message/reply",
+        r=HTTP.post("https://api.line.me/v2/bot/message/reply",
           headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},
           json={"replyToken":tok,"messages":[{"type":"text","text":x} for x in chunks]},timeout=30)
         if not r.ok:
@@ -612,7 +619,7 @@ def reply(tok,text):
         return False
 
 def content(mid):
-    r=requests.get(f"https://api-data.line.me/v2/bot/message/{mid}/content",
+    r=HTTP.get(f"https://api-data.line.me/v2/bot/message/{mid}/content",
       headers={"Authorization":f"Bearer {TOKEN}"},timeout=40)
     return (r.content,r.headers.get("Content-Type","application/octet-stream")) if r.ok else (None,None)
 
@@ -622,7 +629,7 @@ def media_ai(blob,mime,uid,cid,question=""):
         parts=[{"type":"input_text","text":ctx(uid,cid,q)+"\n【今回】\n"+q[:3000]}, {"type":"input_file","filename":"document.pdf","file_data":"data:application/pdf;base64,"+base64.b64encode(blob).decode()}]
         payload={"model":MODEL,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":1200}
         try:
-            r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=180)
+            r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=150)
             if not r.ok: print("OPENAI_MEDIA",r.status_code,r.text[:2000],flush=True); return f"PDF解析エラー({r.status_code})"
             d=r.json(); out=d.get("output_text","")
             if not out:
@@ -670,6 +677,7 @@ def format_retry(text):
     return f"約{max(1,round(float(m.group(1))))}秒" if m else "少し"
 
 def ai(text,uid,cid,img=None,mime=None,extra=""):
+    started=time.perf_counter()
     parts=[{"type":"input_text","text":ctx(uid,cid,text,extra)+"\n【今回】\n"+text[:4000]}]
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
@@ -678,26 +686,28 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
     if needs_web:
         payload["tools"]=[{"type":"web_search"}]; payload["tool_choice"]="auto"
     try:
-        r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
-                        json=payload,timeout=120)
+        r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
+                        json=payload,timeout=90)
         if not r.ok:
             print("OPENAI",r.status_code,r.text,flush=True)
             if r.status_code==429:
                 return f"AIが混み合ってるよ🧭 上限回復まで{format_retry(r.text)}。少し時間をあけてもう一度送って。"
             return f"AIエラー({r.status_code})"
         d=r.json()
-        if d.get("output_text"):return d["output_text"].strip()
+        if d.get("output_text"):
+            print("LATENCY_AI_MS",round((time.perf_counter()-started)*1000),flush=True); return d["output_text"].strip()
         out=[]
         for i in d.get("output",[]):
             if i.get("type")=="message":
                 for z in i.get("content",[]):
                     if z.get("type") in ("output_text","text") and z.get("text"): out.append(z.get("text",""))
         answer="\n".join(out).strip()
-        if answer:return answer
+        if answer:
+            print("LATENCY_AI_MS",round((time.perf_counter()-started)*1000),flush=True); return answer
         print("OPENAI_EMPTY",{"status":d.get("status","") ,"incomplete":d.get("incomplete_details") or {}},flush=True)
         retry=dict(payload); retry.pop("tools",None); retry.pop("tool_choice",None)
         retry["max_output_tokens"]=1600 if img else 1200
-        rr=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=retry,timeout=150)
+        rr=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=retry,timeout=120)
         if not rr.ok:
             print("OPENAI_RETRY",rr.status_code,rr.text[:2000],flush=True); return f"AIエラー({rr.status_code})"
         dd=rr.json()
@@ -893,7 +903,7 @@ def three_document_command(text,uid,cid,qid=None):
     elif re.search(r"(この|これ|それ|図面|画像|写真|PDF|資料)",clean,re.I):media_summary=image_analysis(cid) or ""
     if kind=="estimate" and (wants_image or wants_pdf):
         if not media_summary:return "見積書を作る募集図面がないよ。図面の画像/PDFにリプライして送って。"
-        estimate_text=ai(single_estimate_prompt(clean)+"\n\n【募集図面の読取結果】\n"+media_summary,uid,cid)
+        estimate_text=ai(single_estimate_prompt(clean)+"\n\n【最優先：今回のユーザー指示】\n"+clean+"\nこの指示（入居日、仲介手数料の金額・無料・半額・月数等）を必ず計算に反映する。\n\n【募集図面の読取結果】\n"+media_summary,uid,cid)
         marker="__ESTIMATE_BOTH__" if (wants_image and wants_pdf) else ("__ESTIMATE_IMAGE__" if wants_image else "__ESTIMATE_PDF__")
         return (marker,estimate_text)
     def grab(pat):
@@ -1055,13 +1065,15 @@ def reply_estimate_artifact(tok,base,key,marker):
     image_url=f"{base}/estimate-file/{key}.png"
     pdf_url=f"{base}/estimate-file/{key}.pdf"
     msgs=[]
-    if marker in ("__ESTIMATE_IMAGE__","__ESTIMATE_BOTH__"):
+    # Any explicit artifact request gets the finished estimate image directly in LINE.
+    if marker in ("__ESTIMATE_IMAGE__","__ESTIMATE_PDF__","__ESTIMATE_BOTH__"):
         msgs.append({"type":"image","originalContentUrl":image_url,"previewImageUrl":image_url})
     if marker in ("__ESTIMATE_PDF__","__ESTIMATE_BOTH__"):
-        # LINE Messaging API has no outbound file-message type; deliver the temporary PDF URL as text.
+        # LINE Messaging API has no outbound arbitrary-PDF file message type.
         msgs.append({"type":"text","text":"見積もり概算書PDFはこちら\n"+pdf_url})
     try:
-        r=requests.post("https://api.line.me/v2/bot/message/reply",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},json={"replyToken":tok,"messages":msgs[:5]},timeout=30)
+        sender=globals().get("HTTP",requests)
+        r=sender.post("https://api.line.me/v2/bot/message/reply",headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},json={"replyToken":tok,"messages":msgs[:5]},timeout=20)
         if not r.ok: print("LINE estimate artifact",r.status_code,r.text[:1000],flush=True)
         return r.ok
     except Exception as x: print("reply_estimate_artifact",repr(x),flush=True); return False
