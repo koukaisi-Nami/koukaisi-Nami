@@ -122,6 +122,10 @@ def init_db():
             # Kill every legacy reminder created before explicit opt-in existed.
             c.execute("UPDATE reminders SET status='cancelled',next_run_at=NULL,updated_at=NOW() WHERE status='active' AND COALESCE(explicit_opt_in,FALSE)=FALSE")
             c.execute("CREATE INDEX IF NOT EXISTS reminders_due_idx ON reminders(status,next_run_at)")
+            c.execute("""CREATE TABLE IF NOT EXISTS line_members(
+              conversation_id TEXT NOT NULL,user_id TEXT NOT NULL,display_name TEXT NOT NULL,
+              updated_at TIMESTAMPTZ DEFAULT NOW(),PRIMARY KEY(conversation_id,user_id))""")
+            c.execute("CREATE INDEX IF NOT EXISTS line_members_name_idx ON line_members(conversation_id,display_name)")
             c.execute("""CREATE TABLE IF NOT EXISTS estimate_batch_items(
               id BIGSERIAL PRIMARY KEY,conversation_id TEXT NOT NULL,user_id TEXT,
               line_message_id TEXT UNIQUE,analysis TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW())""")
@@ -156,6 +160,35 @@ def is_batch_estimate_command(text):
 def line_target(e):
     src=e.get("source",{})
     return src.get("groupId") or src.get("roomId") or src.get("userId")
+
+def remember_line_member(cid,uid,display_name):
+    if not DB_URL or not cid or not uid or not display_name:return
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("""INSERT INTO line_members(conversation_id,user_id,display_name) VALUES(%s,%s,%s) ON CONFLICT(conversation_id,user_id) DO UPDATE SET display_name=EXCLUDED.display_name,updated_at=NOW()""",(cid,uid,display_name))
+            cn.commit()
+    except Exception as x:print("remember_line_member",repr(x),flush=True)
+
+def find_line_member(cid,name):
+    if not DB_URL or not cid or not name:return None
+    wanted=name.lstrip('@').strip()
+    try:
+        with db() as cn:
+            with cn.cursor() as c:
+                c.execute("SELECT user_id,display_name FROM line_members WHERE conversation_id=%s ORDER BY updated_at DESC",(cid,)); rows=c.fetchall()
+        exact=[r for r in rows if r[1]==wanted]; partial=[r for r in rows if wanted.lower() in (r[1] or '').lower()]
+        return (exact or partial or [None])[0]
+    except Exception as x:print("find_line_member",repr(x),flush=True);return None
+
+def push_line_mention(target,prefix,user_id,display_name,suffix=''):
+    if not TOKEN or not target:return False,"missing LINE token/target"
+    mention='@'+display_name; text=(prefix or '')+mention+(suffix or ''); start=len(prefix or '')
+    msg={"type":"text","text":text,"mention":{"mentionees":[{"index":start,"length":len(mention),"type":"user","userId":user_id}]}}
+    try:
+        r=HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"to":target,"messages":[msg]},timeout=15)
+        return r.ok,("" if r.ok else f"LINE {r.status_code}: {r.text[:300]}")
+    except Exception as x:return False,repr(x)
 
 def push_line(target,text):
     if not TOKEN or not target:return False,"missing LINE token/target"
@@ -234,7 +267,12 @@ def reminder_loop():
                     cn.commit()
                 for rid,target,assignee,steps,idx,mins in due:
                     steps=steps if isinstance(steps,list) else json.loads(steps); task=steps[idx] if idx<len(steps) else "タスク"
-                    ok,err=push_line(target,f"【タスクリマインド】\n{assignee}：{task}\n完了したら「{task}完了」と報告してください。")
+                    member=find_line_member(target,assignee)
+                    suffix=f"：{task}\n完了したら「{task}完了」と報告してください。"
+                    if member:
+                        ok,err=push_line_mention(target,"【タスクリマインド】\n",member[0],member[1],suffix)
+                    else:
+                        ok,err=push_line(target,f"【タスクリマインド】\n{assignee}{suffix}")
                     if not ok:
                         with db() as cn:
                             with cn.cursor() as c:c.execute("UPDATE reminders SET last_error=%s WHERE id=%s",(err,rid))
@@ -1097,6 +1135,7 @@ def webhook():
         m=e.get("message",{}); typ=m.get("type")
         if typ not in ("text","image","file"):continue
         cid,uid=ids(e); nm=name(e); eid=e.get("webhookEventId") or m.get("id"); mid=m.get("id")
+        remember_line_member(cid,uid,nm)
         qid=m.get("quotedMessageId")
 
         if typ in ("image","file"):
