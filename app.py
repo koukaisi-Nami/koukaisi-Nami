@@ -786,47 +786,62 @@ def format_retry(text):
 
 def ai(text,uid,cid,img=None,mime=None,extra=""):
     started=time.perf_counter()
+
+    def finish(value):
+        value=str(value or "").strip()
+        return value if value.endswith("⚓️") else value+"⚓️"
+
     parts=[{"type":"input_text","text":ctx(uid,cid,text,extra)+"\n【今回】\n"+text[:4000]}]
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
     needs_web=bool(re.search(r"(最新|今日|現在|ニュース|天気|相場|営業時間|公式|検索して|調べて|web|ネット)",text or "",re.I))
     payload={"model":MODEL,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":900}
     if needs_web:
-        payload["tools"]=[{"type":"web_search"}]; payload["tool_choice"]="auto"
+        payload["tools"]=[{"type":"web_search"}]
+        payload["tool_choice"]="auto"
     try:
-        r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
-                        json=payload,timeout=90)
+        r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=90)
         if not r.ok:
             print("OPENAI",r.status_code,r.text,flush=True)
             if r.status_code==429:
-                return f"AIが混み合ってるよ🧭 上限回復まで{format_retry(r.text)}。少し時間をあけてもう一度送って。"
-            return f"AIエラー({r.status_code})"
+                return finish(f"AIが混み合ってるよ🧭 上限回復まで{format_retry(r.text)}。少し時間をあけてもう一度送って。")
+            return finish(f"AIエラー({r.status_code})")
         d=r.json()
         if d.get("output_text"):
-            print("LATENCY_AI_MS",round((time.perf_counter()-started)*1000),flush=True); return d["output_text"].strip()
+            print("LATENCY_AI_MS",round((time.perf_counter()-started)*1000),flush=True)
+            return finish(d["output_text"])
         out=[]
         for i in d.get("output",[]):
             if i.get("type")=="message":
                 for z in i.get("content",[]):
-                    if z.get("type") in ("output_text","text") and z.get("text"): out.append(z.get("text",""))
+                    if z.get("type") in ("output_text","text") and z.get("text"):
+                        out.append(z.get("text",""))
         answer="\n".join(out).strip()
         if answer:
-            print("LATENCY_AI_MS",round((time.perf_counter()-started)*1000),flush=True); return answer
-        print("OPENAI_EMPTY",{"status":d.get("status","") ,"incomplete":d.get("incomplete_details") or {}},flush=True)
-        retry=dict(payload); retry.pop("tools",None); retry.pop("tool_choice",None)
+            print("LATENCY_AI_MS",round((time.perf_counter()-started)*1000),flush=True)
+            return finish(answer)
+        print("OPENAI_EMPTY",{"status":d.get("status",""),"incomplete":d.get("incomplete_details") or {}},flush=True)
+        retry=dict(payload)
+        retry.pop("tools",None)
+        retry.pop("tool_choice",None)
         retry["max_output_tokens"]=1600 if img else 1200
         rr=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=retry,timeout=120)
         if not rr.ok:
-            print("OPENAI_RETRY",rr.status_code,rr.text[:2000],flush=True); return f"AIエラー({rr.status_code})"
+            print("OPENAI_RETRY",rr.status_code,rr.text[:2000],flush=True)
+            return finish(f"AIエラー({rr.status_code})")
         dd=rr.json()
-        if dd.get("output_text"):return dd["output_text"].strip()
+        if dd.get("output_text"):
+            return finish(dd["output_text"])
         vals=[]
         for i in dd.get("output",[]):
             if i.get("type")=="message":
                 for z in i.get("content",[]):
-                    if z.get("type") in ("output_text","text") and z.get("text"): vals.append(z.get("text",""))
-        return "\n".join(vals).strip() or "資料は受け取れたけど回答生成に失敗したよ。もう一度同じ資料に返信してね。"
-    except Exception as x:print("ai",repr(x),flush=True);return "AI接続エラー"
+                    if z.get("type") in ("output_text","text") and z.get("text"):
+                        vals.append(z.get("text",""))
+        return finish("\n".join(vals).strip() or "資料は受け取れたけど回答生成に失敗したよ。もう一度同じ資料に返信してね。")
+    except Exception as x:
+        print("ai",repr(x),flush=True)
+        return finish("AI接続エラー")
 
 def analyze(img,mime,uid,cid,question=""):
     prompt="""資料を高精度で詳細に解析。小さい文字・表・注記も確認する。画像内に複数の募集図面・複数物件が写っている場合は、1件だけ選ばず全物件をそれぞれ独立して読み取り、物件ごとに明確に分ける。別物件の金額・条件を絶対に混ぜない。
