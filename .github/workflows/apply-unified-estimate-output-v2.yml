@@ -1,0 +1,51 @@
+name: Apply unified estimate output v2
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-unified-estimate-output-v2.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch estimate routing
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py'); s=p.read_text()
+          old='return bool(re.search(batch_word+r".*(?:見積|初期費用)|(?:見積|初期費用).*"+batch_word,t,re.I))'
+          new='return bool(re.search(batch_word+r".*(?:見積|初期費用|画像|PDF)|(?:見積|初期費用|画像|PDF).*"+batch_word,t,re.I))'
+          if old not in s: raise SystemExit('batch command anchor missing')
+          s=s.replace(old,new,1)
+          old='instruction=(user_instruction or \'\')+f"\\nこれは全{total}件中{index}件目。ほかの物件と混ぜず、この1物件だけを単独見積もりとして計算・出力すること。"'
+          new='instruction=(user_instruction or \'\')+f"\\nこれは全{total}件中{index}件目。ほかの物件と混ぜず、この1物件だけを単独見積もりとして計算・出力すること。\\n不足項目があっても確認質問で止めず、判明情報だけで必ず見積を完成。不明項目だけ－。画像/PDFは出力形式指定であり計算ルールは文章見積と同一。入居日指定時の当月前家賃は日割り賃料として計算し、割引指定は割引額が分かる表記にする。"'
+          if old not in s: raise SystemExit('batch instruction anchor missing')
+          s=s.replace(old,new,1)
+          # Ensure artifact requests use the recent uploaded batch even with natural phrases such as 全部画像にして.
+          p.write_text(s)
+          PY
+          python -m py_compile app.py estimate_document.py
+      - name: Regression checks
+        run: |
+          python - <<'PY'
+          import app
+          cases=['3件全部の見積もり','この3件画像で','全部画像にして','全物件PDF','すべて初期費用']
+          for x in cases:
+              assert app.is_batch_estimate_command(x), x
+          assert app.batch_artifact_marker('全部画像にして')=='__ESTIMATE_IMAGE__'
+          assert app.batch_artifact_marker('全部PDFで')=='__ESTIMATE_PDF__'
+          assert app.batch_artifact_marker('画像とPDF両方')=='__ESTIMATE_BOTH__'
+          print('estimate routing regression OK')
+          PY
+      - name: Commit migration
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Unify single and batch estimate output routing'
+          git push
