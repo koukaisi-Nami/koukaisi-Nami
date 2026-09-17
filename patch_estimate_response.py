@@ -1,9 +1,13 @@
 from pathlib import Path
-import re
 p=Path('app.py')
 s=p.read_text()
 
-pattern=r'''        out=\[\]\n        for i in d\.get\("output",\[\]\):\n            if i\.get\("type"\)=="message":\n                for z in i\.get\("content",\[\]\):\n                    if z\.get\("type"\)=="output_text":out\.append\(z\.get\("text",""\)\)\n        return "\\n"\.join\(out\)\.strip\(\) or "回答を作れなかったよ。"'''
+a=s.index('def ai(')
+b=s.index('\ndef analyze(',a)
+seg=s[a:b]
+start=seg.index('        out=[]\n')
+end_marker='        return "\\n".join(out).strip() or "回答を作れなかったよ。"'
+end=seg.index(end_marker,start)+len(end_marker)
 replacement='''        out=[]
         for i in d.get("output",[]):
             if i.get("type")=="message":
@@ -12,9 +16,7 @@ replacement='''        out=[]
                         out.append(z.get("text",""))
         answer="\\n".join(out).strip()
         if answer:return answer
-        status=d.get("status","")
-        incomplete=d.get("incomplete_details") or {}
-        print("OPENAI_EMPTY",{"status":status,"incomplete":incomplete,"types":[i.get("type") for i in d.get("output",[])]},flush=True)
+        print("OPENAI_EMPTY",{"status":d.get("status","") ,"incomplete":d.get("incomplete_details") or {}},flush=True)
         retry=dict(payload)
         retry.pop("tools",None); retry.pop("tool_choice",None)
         retry["max_output_tokens"]=1600 if img else 1200
@@ -31,8 +33,8 @@ replacement='''        out=[]
                     if z.get("type") in ("output_text","text") and z.get("text"):
                         vals.append(z.get("text",""))
         return "\\n".join(vals).strip() or "資料は受け取れたけど回答生成に失敗したよ。もう一度同じ資料に返信してね。"'''
-s,n=re.subn(pattern,lambda m:replacement,s,count=1)
-if n!=1: raise SystemExit('ai target not found')
+seg=seg[:start]+replacement+seg[end:]
+s=s[:a]+seg+s[b:]
 
 old='''    if question: prompt += "\\nユーザーの質問を最優先して答える: "+question[:1500]
     return media_ai(img,mime,uid,cid,prompt)'''
