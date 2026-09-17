@@ -1,0 +1,30 @@
+name: Apply estimate response fix
+on:
+  push:
+    branches: [chapi-estimate-response-fix]
+    paths: [patch_estimate_response.py, ESTIMATE_FIX_TRIGGER]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-estimate-response-fix
+      - name: Apply patch
+        run: python patch_estimate_response.py
+      - name: Validate
+        run: |
+          python -m py_compile app.py
+          grep -q 'OPENAI_EMPTY' app.py
+          grep -q '見積回答ルール' app.py
+          grep -q 'quoted_blob,quoted_mime=content(qid)' app.py
+      - name: Commit app
+        run: |
+          git config user.name 'Chapi'
+          git config user.email 'actions@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix image PDF estimate responses'
+          git push origin HEAD:chapi-estimate-response-fix
