@@ -1258,6 +1258,23 @@ def webhook():
             reminder_created=create_member_reminder(cid,line_target(e),uid,assignee,steps,interval)
         quick_task=task_command(text,uid,cid)
         quick_doc=three_document_command(text,uid,cid,qid)
+        # Safety net: a recent listing + estimate intent must never fall through to free-form chat.
+        # This also covers natural requests such as 「この物件15日入居、仲介半額で画像にして」.
+        estimate_intent=bool(re.search(r"(見積|初期費用|入居.{0,8}(?:日|月)|仲介.{0,8}(?:半額|無料|割引)|(?:画像|PNG|PDF).{0,12}(?:にして|で|出して|作って))",text,re.I))
+        wants_estimate_artifact=bool(re.search(r"(画像|PNG|PDF)",text,re.I))
+        if not quick_doc and estimate_intent:
+            latest_material=image_analysis(cid,qid) if qid else image_analysis(cid)
+            if latest_material:
+                try:
+                    estimate_data,estimate_text=structured_estimate(ai,text,latest_material,uid,cid)
+                    if wants_estimate_artifact:
+                        wants_image=bool(re.search(r"(画像|PNG)",text,re.I)); wants_pdf=bool(re.search(r"PDF",text,re.I))
+                        marker="__ESTIMATE_BOTH__" if wants_image and wants_pdf else ("__ESTIMATE_PDF__" if wants_pdf else "__ESTIMATE_IMAGE__")
+                        quick_doc=(marker,estimate_data,estimate_text)
+                    else:
+                        quick_doc=estimate_text
+                except Exception as x:
+                    print("structured_estimate_fallback",repr(x),flush=True)
         awaiting=latest_awaiting(cid,uid)
         if batch_answer:
             ans=batch_answer
