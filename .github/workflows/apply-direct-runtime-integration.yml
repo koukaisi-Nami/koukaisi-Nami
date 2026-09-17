@@ -1,0 +1,38 @@
+name: Apply direct structured runtime
+on:
+  push:
+    branches: [fix/direct-runtime-integration]
+    paths:
+      - '.github/workflows/apply-direct-runtime-integration.yml'
+jobs:
+  apply:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/direct-runtime-integration
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply integration to real app.py
+        run: python scripts/connect_structured_estimates.py
+      - name: Guard direct integration
+        run: |
+          grep -q 'from structured_estimate_runtime import generate_text as structured_estimate' app.py
+          grep -q 'estimate_data,estimate_text=structured_estimate' app.py
+          grep -q "ESTIMATE_CACHE\[key\]=(time.time(),estimate_data)" app.py
+          python -m py_compile app.py structured_estimate_runtime.py estimate_model.py estimate_document.py
+      - name: Run estimate regression tests
+        run: |
+          pip install reportlab pymupdf psycopg[binary] flask requests
+          python -m unittest tests.test_estimate_model tests.test_estimate_renderer tests.test_structured_estimate_runtime -v
+      - name: Commit actual app.py
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Wire structured estimates directly into app runtime'
+          git push
