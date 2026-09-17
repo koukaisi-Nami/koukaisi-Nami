@@ -1,0 +1,29 @@
+name: Apply final estimate implementation
+on:
+  push:
+    branches: [chapi-estimate-final-image]
+    paths: [patch_estimate_final.py, estimate_final_trigger.txt]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: chapi-estimate-final-image}
+      - run: python patch_estimate_final.py
+      - run: python -m py_compile app.py
+      - run: |
+          grep -q 'def estimate_followup_command' app.py
+          grep -q 'def _estimate_image_reply' app.py
+          grep -q "初回保証料" app.py
+          grep -q "当月前家賃" app.py
+          grep -q "if not image_replied" app.py
+      - name: Commit applied app
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Implement final customer estimate and LINE image output'
+          git push origin HEAD:chapi-estimate-final-image
