@@ -1,5 +1,9 @@
 name: Apply batch estimate images
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-batch-estimate-images.yml'
   workflow_dispatch:
 permissions:
   contents: write
@@ -13,24 +17,16 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           p=Path('app.py'); s=p.read_text()
-          # Expand natural batch wording.
           s=s.replace('batch_word=r"(?:まとめて|一括|全部|複数|[0-9０-９一二三四五六七八九十]+\\s*(?:件|物件)(?:分)?)"', 'batch_word=r"(?:まとめて|一括|全部|全て|すべて|全物件|複数|[0-9０-９一二三四五六七八九十]+\\s*(?:件|物件)(?:分)?)"')
-          # Add helpers immediately before line_target.
           anchor='def line_target(e):\n'
-          helper='''def batch_artifact_marker(text):\n    t=text or ''\n    wants_image=bool(re.search(r"(?:画像|写真|PNG|イメージ)",t,re.I))\n    wants_pdf=bool(re.search(r"PDF",t,re.I))\n    if wants_image and wants_pdf:return "__ESTIMATE_BOTH__"\n    if wants_pdf:return "__ESTIMATE_PDF__"\n    if wants_image:return "__ESTIMATE_IMAGE__"\n    return None\n\ndef send_batch_estimate_artifacts(reply_token,target,estimates,base,marker):\n    """Send each property's finished estimate independently; never re-calculate from chat history."""\n    if not estimates:return\n    first_messages=[]\n    for i,estimate_text in enumerate(estimates):\n        key=hashlib.sha256((str(time.time())+str(i)+estimate_text).encode()).hexdigest()[:24]\n        ESTIMATE_CACHE[key]=(time.time(),estimate_text)\n        image_url=f"{base}/estimate-file/{key}.png"\n        pdf_url=f"{base}/estimate-file/{key}.pdf"\n        msgs=[]\n        if marker in ("__ESTIMATE_IMAGE__","__ESTIMATE_BOTH__"):\n            msgs.append({"type":"image","originalContentUrl":image_url,"previewImageUrl":image_url})\n        if marker in ("__ESTIMATE_PDF__","__ESTIMATE_BOTH__"):\n            msgs.append({"type":"text","text":"見積もり概算書PDFはこちら\\n"+pdf_url})\n        if i==0:\n            first_messages.extend(msgs)\n        else:\n            for msg in msgs:\n                try:\n                    HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"to":target,"messages":[msg]},timeout=20)\n                except Exception as x:print("batch_artifact_push",repr(x),flush=True)\n    if first_messages:\n        try:\n            HTTP.post("https://api.line.me/v2/bot/message/reply",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"replyToken":reply_token,"messages":first_messages[:5]},timeout=20)\n        except Exception as x:print("batch_artifact_reply",repr(x),flush=True)\n\n'''
+          helper='''def batch_artifact_marker(text):\n    t=text or ''\n    wants_image=bool(re.search(r"(?:画像|写真|PNG|イメージ)",t,re.I))\n    wants_pdf=bool(re.search(r"PDF",t,re.I))\n    if wants_image and wants_pdf:return "__ESTIMATE_BOTH__"\n    if wants_pdf:return "__ESTIMATE_PDF__"\n    if wants_image:return "__ESTIMATE_IMAGE__"\n    return None\n\ndef send_batch_estimate_artifacts(reply_token,target,estimates,base,marker):\n    if not estimates:return\n    first_messages=[]\n    for i,estimate_text in enumerate(estimates):\n        key=hashlib.sha256((str(time.time())+str(i)+estimate_text).encode()).hexdigest()[:24]\n        ESTIMATE_CACHE[key]=(time.time(),estimate_text)\n        image_url=f"{base}/estimate-file/{key}.png"\n        pdf_url=f"{base}/estimate-file/{key}.pdf"\n        msgs=[]\n        if marker in ("__ESTIMATE_IMAGE__","__ESTIMATE_BOTH__"):\n            msgs.append({"type":"image","originalContentUrl":image_url,"previewImageUrl":image_url})\n        if marker in ("__ESTIMATE_PDF__","__ESTIMATE_BOTH__"):\n            msgs.append({"type":"text","text":"見積もり概算書PDFはこちら\\n"+pdf_url})\n        if i==0:first_messages.extend(msgs)\n        else:\n            for msg in msgs:\n                try:HTTP.post("https://api.line.me/v2/bot/message/push",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"to":target,"messages":[msg]},timeout=20)\n                except Exception as x:print("batch_artifact_push",repr(x),flush=True)\n    if first_messages:\n        try:HTTP.post("https://api.line.me/v2/bot/message/reply",headers={"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json"},json={"replyToken":reply_token,"messages":first_messages[:5]},timeout=20)\n        except Exception as x:print("batch_artifact_reply",repr(x),flush=True)\n\n'''
           if 'def batch_artifact_marker(text):' not in s:
               if anchor not in s: raise SystemExit('line_target anchor not found')
               s=s.replace(anchor,helper+anchor,1)
-          # In batch estimate completion, keep the independently calculated estimates and branch to artifacts.
-          old='''            batch_answer=batch_estimates_using_single(groups,text,uid,cid)\n            clear_estimate_batch(cid)'''
-          new='''            batch_answer=batch_estimates_using_single(groups,text,uid,cid)\n            clear_estimate_batch(cid)'''
-          if old not in s: raise SystemExit('batch completion block not found')
-          # Inject artifact dispatch before normal final output block.
           needle='''        saved_ans="\\n\\n".join(ans) if isinstance(ans,(list,tuple)) else ans\n'''
           replacement='''        batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None\n        if batch_marker and isinstance(batch_answer,list):\n            base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')\n            saved_ans="\\n\\n".join(batch_answer)\n            save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)\n            send_batch_estimate_artifacts(e.get("replyToken"),line_target(e),batch_answer,base,batch_marker)\n            continue\n        saved_ans="\\n\\n".join(ans) if isinstance(ans,(list,tuple)) else ans\n'''
           if needle not in s: raise SystemExit('final output anchor not found')
           s=s.replace(needle,replacement,1)
-          # Guarantee separate bubbles for text batches too.
           old2='''        if isinstance(ans,list):\n            # LINE reply is capped at 5 messages. Reply with the first batch, then push the rest one by one.\n            first=ans[:5]\n            reply(e.get("replyToken"),first)\n            target=line_target(e)\n            for item in ans[5:]:\n                push_line(target,item)\n        else:\n            reply(e.get("replyToken"),ans)'''
           new2='''        if isinstance(ans,list):\n            target=line_target(e)\n            if ans:\n                reply(e.get("replyToken"),ans[0])\n                for item in ans[1:]:push_line(target,item)\n        else:\n            reply(e.get("replyToken"),ans)'''
           if old2 in s:s=s.replace(old2,new2,1)
