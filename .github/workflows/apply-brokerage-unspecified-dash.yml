@@ -1,0 +1,29 @@
+name: Apply brokerage unspecified dash
+on:
+  push:
+    branches: [chapi-brokerage-unspecified-dash]
+    paths: [patch_brokerage_unspecified_dash.py, brokerage_dash_trigger.txt]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: chapi-brokerage-unspecified-dash}
+      - run: python patch_brokerage_unspecified_dash.py
+      - run: python -m py_compile app.py
+      - name: Validate estimate rules
+        run: |
+          grep -q '今回の見積もりについて仲介手数料の指定がない場合' app.py
+          grep -q '必ず「－」' app.py
+          grep -q '仲介手数料を自動で家賃1ヶ月＋税等にしない' app.py
+          grep -q '入居日不明なら当月前家賃は「－」' app.py
+      - name: Commit app.py
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Require explicit brokerage fee for estimates'
+          git push origin HEAD:chapi-brokerage-unspecified-dash
