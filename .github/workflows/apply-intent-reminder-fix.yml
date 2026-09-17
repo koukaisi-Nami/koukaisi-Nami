@@ -1,0 +1,24 @@
+name: Apply intent reminder fix
+on:
+  push:
+    branches: [chapi-intent-reminder-fix]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest
+      - run: python patch_intent_reminder_fix.py
+      - run: python -m py_compile app.py intent_router.py
+      - run: pytest -q test_intent_router.py
+      - name: Commit integrated app
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Gate reminders behind explicit reminder intent'
+          git push
