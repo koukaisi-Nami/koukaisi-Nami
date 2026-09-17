@@ -578,45 +578,66 @@ def improvement_targets(req_text,src):
     ordered={name:found[name] for name in dict.fromkeys(names) if name in found}
     return dict(list(ordered.items())[:6])
 
-def targeted_candidate(req_text,current):
+def _response_text(d):
+    out=(d.get("output_text") or "").strip()
+    if out:return out
+    xs=[]
+    for item in d.get("output",[]):
+        if item.get("type")=="message":
+            for z in item.get("content",[]):
+                if z.get("type") in ("output_text","text") and z.get("text"):xs.append(z.get("text",""))
+    return "\n".join(xs).strip()
+
+def targeted_candidate(req_text,current,feedback=""):
     targets=improvement_targets(req_text,current)
     if not targets: raise RuntimeError("対象機能を特定できなかった")
     instruction="""本番稼働中のLINE Bot『航海士ナミ』を安全に部分改修する。
 渡された関数だけを変更対象にし、それ以外の機能・記憶・DBデータは絶対に削除しない。
-秘密情報をコードへ埋め込まない。DB変更は後方互換のALTER/CREATE IF NOT EXISTSを使う。
-出力はJSONのみ。形式は {"replacements":[{"function":"関数名","new":"その関数を丸ごと置換するPythonコード"}],"summary":"短い説明"}。
-変更不要な関数はreplacementsに含めない。functionは渡された関数名だけに限る。
-"""
+要求が既存関数の小変更で実現可能なら必ず具体的なreplacementを1件以上返す。
+秘密情報をコードへ埋め込まない。DB変更は後方互換のALTER/CREATE IF NOT EXISTSだけ。
+出力はJSONのみ: {"replacements":[{"function":"関数名","new":"関数を丸ごと置換するPythonコード"}],"summary":"短い説明"}。
+functionは渡された関数名だけ。変更不能なら空配列ではなくsummaryに理由を明記する。"""
     selected="\n\n".join(f"【{name}】\n{body}" for name,body in targets.items())
-    payload={"model":MODEL,"instructions":instruction,
-      "input":[{"role":"user","content":[{"type":"input_text","text":
-        "【改修要求】\n"+req_text+"\n\n【変更可能な関数だけ】\n"+selected}]}]}
-    r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
-                    json=payload,timeout=180)
-    if not r.ok: raise RuntimeError(f"AI codegen failed {r.status_code}")
-    d=r.json(); out=d.get("output_text","")
-    if not out:
-        xs=[]
-        for item in d.get("output",[]):
-            if item.get("type")=="message":
-                for z in item.get("content",[]):
-                    if z.get("type")=="output_text": xs.append(z.get("text",""))
-        out="\n".join(xs)
-    out=re.sub(r"^```(?:json)?\s*|\s*```$","",out.strip())
-    try: data=json.loads(out)
-    except json.JSONDecodeError as x: raise RuntimeError("部分改修のJSONが不正: "+str(x))
-    replacements=data.get("replacements",[])
-    if not replacements: raise RuntimeError("変更内容が返されなかった")
-    candidate=current
-    for item in replacements:
-        name=item.get("function",""); new=item.get("new","").strip()
-        old=targets.get(name)
-        if not old or not new.startswith("def "+name+"("):
-            raise RuntimeError("許可外の関数変更を検出")
-        if candidate.count(old)!=1:
-            raise RuntimeError("変更元関数を安全に特定できなかった")
-        candidate=candidate.replace(old,new+"\n",1)
-    return candidate
+    last=""
+    # Generation itself gets bounded retries. Empty/malformed output is not an immediate dead-end.
+    for generation_attempt in range(1,4):
+        extra=("\n【前回失敗】\n"+last if last else "")+("\n【レビュー/安全チェック指示】\n"+feedback if feedback else "")
+        payload={"model":MODEL,"instructions":instruction,"input":[{"role":"user","content":[{"type":"input_text","text":"【改修要求】\n"+req_text+extra+"\n\n【変更可能な関数だけ】\n"+selected}]}],"max_output_tokens":4000}
+        try:
+            r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=150)
+            if not r.ok:
+                last=f"AI codegen HTTP {r.status_code}"
+                if r.status_code not in (408,429,500,502,503,504):break
+                continue
+            out=re.sub(r"^```(?:json)?\s*|\s*```$","",_response_text(r.json()).strip())
+            if not out:
+                last="AIの出力が空だった。必ずJSONとreplacementを返すこと"
+                continue
+            try:data=json.loads(out)
+            except Exception as x:
+                last="JSON不正: "+str(x)+" / 出力先頭: "+out[:300]
+                continue
+            replacements=data.get("replacements") or []
+            if not replacements:
+                last="replacementが0件だった。要求を実現する具体的な関数置換を返すこと。理由: "+str(data.get("summary","")[:500])
+                continue
+            candidate=current
+            bad=None
+            for item in replacements:
+                name=str(item.get("function","")).strip(); code=str(item.get("new","")).strip(); old=targets.get(name)
+                if not old or not code.startswith("def "+name+"("):
+                    bad="許可外または不正な関数置換"; break
+                if candidate.count(old)!=1:
+                    bad="変更元関数を安全に特定できなかった"; break
+                candidate=candidate.replace(old,code+"\n",1)
+            if bad:
+                last=bad; continue
+            if candidate==current:
+                last="候補コードが現行と同一だった"; continue
+            return candidate
+        except Exception as x:
+            last="codegen exception: "+repr(x)
+    raise RuntimeError("変更案生成を3回試したが完了できなかった: "+last[:800])
 
 def codegen_improvement(req_text,uid,cid):
     current,_=repo_file()
@@ -659,13 +680,13 @@ def reviewed_candidate(req_text):
         if errors:
             audit.append(f"attempt {attempt}: guard failed: "+"; ".join(errors[:5]))
             if attempt>=3:return None,audit,"安全チェックが3回以内に解消しなかった"
-            candidate=targeted_candidate(req_text+"\n【前回の安全チェックエラー】\n"+"\n".join(errors[:10]),current)
+            candidate=targeted_candidate(req_text,current,"安全チェックエラー:\n"+"\n".join(errors[:10]))
             continue
         action,feedback=supervisor_review(req_text,current,candidate,attempt)
         audit.append(f"attempt {attempt}: supervisor {action}: {feedback[:500]}")
         if action=="approve":return candidate,audit,None
         if attempt>=3:return None,audit,"上位AIレビューが3回以内に承認しなかった"
-        candidate=targeted_candidate(req_text+"\n【上位AIレビュー修正指示】\n"+feedback,current)
+        candidate=targeted_candidate(req_text,current,feedback)
     return None,audit,"レビュー上限に到達"
 
 def create_pr(req_text):
