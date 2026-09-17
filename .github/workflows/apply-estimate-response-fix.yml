@@ -2,7 +2,7 @@ name: Apply estimate response fix
 on:
   push:
     branches: [chapi-estimate-response-fix]
-    paths: [patch_estimate_response.py]
+    paths: [patch_estimate_response.py, ESTIMATE_FIX_TRIGGER]
 permissions:
   contents: write
 jobs:
