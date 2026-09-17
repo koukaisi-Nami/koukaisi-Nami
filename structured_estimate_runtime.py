@@ -3,46 +3,38 @@ AI extracts facts into JSON; deterministic model/renderers own totals and artifa
 """
 import json,re
 from estimate_model import normalize_estimate, estimate_to_text
-
 FIXED=[('current_rent','当月前家賃'),('next_rent','次月前家賃'),('deposit','敷金'),('key_money','礼金'),('guarantee','初回保証料'),('brokerage','仲介手数料'),('insurance','火災保険'),('support','24時間サポート'),('key_exchange','鍵交換'),('admin','事務手数料')]
-
 def prompt(instruction,material,property_name=''):
-    schema={"property":property_name or "物件名","move_in":"15日 or empty","items":[{"key":"current_rent","label":"当月前家賃","amount":None,"original_amount":None,"discount_amount":0,"breakdown":"日割り16日分 or empty","status":"known|unknown"}],"notes":[]}
+    schema={"property":property_name or "物件名","move_in":"15日 or empty","items":[{"key":"current_rent","label":"当月前家賃","amount":None,"original_amount":None,"discount_amount":0,"breakdown":"","status":"known|unknown"}],"notes":[]}
     return f'''募集図面から初期費用を計算しJSONだけ返す。推測禁止。固定項目順: {FIXED}。
-管理費/共益費は前家賃に含める。当月前家賃は入居日指定時だけ日割りしbreakdownに「日割りN日分」。次月前家賃は賃料+管理費。
-仲介手数料は今回のユーザー指示で明示された時だけ計上。半額/無料/○円引き/○%OFF/○円にして等、対象と値が明確なら original_amount, discount_amount, amount(割引後) を分ける。曖昧な「安くして」は金額を作らない。
-火災保険は資料に金額があれば使用。金額なし/記載なしは20000円を仮計上しbreakdown="仮"。保証料の率/額がなければ賃料+管理費の50%を仮計上しbreakdown="仮"。
-不明項目も必ず固定項目として amount=null,status="unknown" で残す。既存カテゴリ外の契約時必須費用は固定項目の後に追加。totalは出してもよいがサーバ側で再計算する。
+最重要：図面の「その他費用」「契約時費用」「入居時費用」「備考」「特約」「諸費用」を省略せず最後まで読む。名称が違っても意味で分類する。
+鍵交換費/鍵交換代/鍵設定費/シリンダー交換/鍵登録費→key_exchange。24Hサポート/24時間サポート/安心サポート/緊急サポート/入居者サポート/Goodプレミアムα等の生活サポート→support。住宅総合保険/火災保険/家財保険/損保/少額短期保険→insurance。登録料/事務手数料/契約事務手数料→admin。ただし別個の費用なら固定項目後に別行で残す。
+資料記載額を最優先しfallbackで上書き禁止。税込はそのまま。税抜は消費税10%を加えた税込額をamountにする（3000円税抜→3300円）。
+管理費/共益費は前家賃に含める。当月前家賃は入居月の日数が確定できる時だけ日割り。月不明なら30日/31日を仮定せずamount=null。次月前家賃は賃料+管理費。
+仲介手数料は今回の指示で明示された時だけ計上。半額/無料/値引/OFF等が明確ならoriginal_amount,discount_amount,amountを分ける。
+火災保険は資料額を最優先。資料に額がない時だけ20000円を仮計上。保証料も資料の額/率を最優先し、ない時だけ賃料+管理費の50%を仮計上。
+不明項目はamount=null。既存カテゴリ外の契約時必須費用は固定項目後に追加。breakdownは日割り日数、賃料+管理費、保証率、割引など必要情報だけ。「税込」「要確認」「概算」は入れない。
 形式例: {json.dumps(schema,ensure_ascii=False)}
 【今回の指示】{instruction}
 【資料】{material}'''
-
 def _extract(raw):
-    raw=(raw or '').strip(); raw=re.sub(r'^```(?:json)?\s*|\s*```$','',raw,flags=re.I|re.S)
-    a=raw.find('{'); b=raw.rfind('}')
+    raw=(raw or '').strip(); raw=re.sub(r'^```(?:json)?\s*|\s*```$','',raw,flags=re.I|re.S); a=raw.find('{'); b=raw.rfind('}')
     if a<0 or b<=a: raise ValueError('no json')
     return json.loads(raw[a:b+1])
-
+def _has_month(t): return bool(re.search(r'(?:\d{4}[年/\-.])?\d{1,2}月|\d{4}[-/]\d{1,2}[-/]\d{1,2}',t or ''))
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
-    req=prompt(instruction,material,property_name)
-    last=''
+    req=prompt(instruction,material,property_name); last=''
     for attempt in range(2):
-        last=ai_call(req if attempt==0 else req+'\n前回はJSONとして不正。説明文なし・コードフェンスなしの有効なJSONオブジェクトだけ返す。',uid,cid)
+        last=ai_call(req if attempt==0 else req+'\n有効なJSONオブジェクトだけ返す。',uid,cid)
         try:
-            d=normalize_estimate(_extract(last))
-            # Ensure all fixed rows exist and stay ordered, without inventing amounts.
-            bykey={x.get('key'):x for x in d['items']}
-            fixed=[]
+            d=normalize_estimate(_extract(last)); bykey={x.get('key'):x for x in d['items']}; fixed=[]
             for key,label in FIXED:
-                row=bykey.get(key) or {'key':key,'label':label,'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'}
-                row['label']=label; fixed.append(row)
-            extras=[x for x in d['items'] if x.get('key') not in {k for k,_ in FIXED}]
-            d['items']=fixed+extras
+                row=bykey.get(key) or {'key':key,'label':label,'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'}; row['label']=label; fixed.append(row)
+            d['items']=fixed+[x for x in d['items'] if x.get('key') not in {k for k,_ in FIXED}]
+            if re.search(r'\d{1,2}日(?:入居)?',instruction or '') and not _has_month(instruction):
+                r=d['items'][0]; r.update({'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'})
             return normalize_estimate(d)
-        except Exception:
-            pass
+        except Exception: pass
     raise ValueError('estimate JSON invalid after repair')
-
 def generate_text(ai_call,instruction,material,uid,cid,property_name=''):
-    data=generate(ai_call,instruction,material,uid,cid,property_name)
-    return data,estimate_to_text(data)
+    data=generate(ai_call,instruction,material,uid,cid,property_name); return data,estimate_to_text(data)
