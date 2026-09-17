@@ -1,0 +1,33 @@
+name: Apply estimate fallback routing
+on:
+  push:
+    branches: [fix/nami-estimate-memory]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/nami-estimate-memory
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply routing patch
+        run: python scripts/patch_estimate_fallback.py
+      - name: Syntax and estimate regression
+        run: |
+          python -m py_compile app.py structured_estimate_runtime.py estimate_model.py estimate_document.py
+          python -m unittest tests.test_estimate_model tests.test_estimate_renderer -v
+          grep -q 'structured_estimate_fallback' app.py
+          grep -q 'latest_material=image_analysis' app.py
+      - name: Commit actual runtime change
+        run: |
+          git config user.name 'nami-ci'
+          git config user.email 'nami-ci@users.noreply.github.com'
+          git add app.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Route recent listing estimates through structured runtime'
+          git push origin HEAD:fix/nami-estimate-memory
