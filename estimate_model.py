@@ -36,6 +36,8 @@ def normalize_estimate(data):
         'items':rows,
         'total':total,
         'total_complete':bool(rows) and all(r['amount'] is not None for r in rows),
+        # Notes remain in the canonical object for internal use / future documents,
+        # but customer-facing LINE estimate text intentionally does not dump them.
         'notes':[str(x) for x in (data.get('notes') or [])][:6],
     }
 
@@ -55,5 +57,4 @@ def estimate_to_text(data):
             out.append('  ↳ '+' / '.join(bits))
     out.append('合計：'+('要確認' if d['total'] is None else f"{d['total']:,}円"))
     if not d['total_complete']: out.append('※ 未確定項目があるため、確定時に合計が変動します。')
-    out.extend(d['notes'])
     return '\n'.join(out)
