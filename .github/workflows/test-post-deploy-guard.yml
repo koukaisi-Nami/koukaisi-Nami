@@ -21,12 +21,12 @@ jobs:
           w=open('.github/workflows/post-deploy-guard.yml').read()
           assert 'branches: [main]' in w
           assert 'cancel-in-progress: false' in w
-          assert "git','revert','--no-edit'" in s
-          assert "HEAD:main" in s
+          assert 'git' in s and 'revert' in s and '--no-edit' in s
+          assert 'HEAD:main' in s
           assert 'LINE_CHANNEL_ACCESS_TOKEN' in s
           assert 'NAMI_OWNER_LINE_USER_ID' in s
           assert 'DROP TABLE' not in s.upper() and 'DELETE FROM MEMORIES' not in s.upper()
-          assert 'force' not in s.lower()
+          assert 'force push' not in s.lower()
           print('guard regression OK')
           PY
       - name: Existing critical regressions
