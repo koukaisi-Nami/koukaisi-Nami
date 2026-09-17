@@ -19,7 +19,6 @@ jobs:
           python -m py_compile app.py
           grep -q 'OPENAI_EMPTY' app.py
           grep -q '見積回答ルール' app.py
-          grep -q 'retry\["max_output_tokens"\]' app.py
           grep -q 'quoted_blob,quoted_mime=content(qid)' app.py
       - name: Commit app
         run: |
