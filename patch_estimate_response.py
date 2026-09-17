@@ -6,8 +6,7 @@ a=s.index('def ai(')
 b=s.index('\ndef analyze(',a)
 seg=s[a:b]
 start=seg.index('        out=[]\n')
-end_marker='        return "\\n".join(out).strip() or "回答を作れなかったよ。"'
-end=seg.index(end_marker,start)+len(end_marker)
+end=seg.index('\n    except Exception as x:print("ai"',start)
 replacement='''        out=[]
         for i in d.get("output",[]):
             if i.get("type")=="message":
