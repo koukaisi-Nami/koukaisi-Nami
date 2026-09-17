@@ -1,0 +1,34 @@
+name: Apply reminder monster final
+on:
+  push:
+    branches: [chapi-reminder-monster-final]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python patch_reminder_monster_final.py
+      - run: python -m py_compile app.py intent_router.py
+      - run: |
+          python - <<'PY'
+          from intent_router import should_create_reminder, reminder_has_enough_context, reminder_needs_timing
+          for t in ['ナミ、テスト','ナミ、これの見積もり教えて','赤崎、見積もりお願い','タスク管理して','10分おきに確認して']:
+              assert not should_create_reminder(t), t
+          assert should_create_reminder('赤崎の見積もりを10分おきにリマインドして')
+          assert reminder_has_enough_context('赤崎の見積もりを10分おきにリマインドして')
+          assert reminder_needs_timing('赤崎の見積もりをリマインドして')
+          s=open('app.py').read()
+          assert "explicit_opt_in=TRUE" in s
+          assert "status='cancelled'" in s
+          PY
+      - name: Commit integration
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Stop reminder monster and cancel legacy pushes'
+          git push
