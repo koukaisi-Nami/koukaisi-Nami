@@ -1390,66 +1390,58 @@ def health():return "航海士ナミ FINAL 部長モード OK",200
 def webhook():
     raw=request.get_data()
     expected=base64.b64encode(hmac.new(SECRET.encode(),raw,hashlib.sha256).digest()).decode()
-    if not hmac.compare_digest(expected,request.headers.get("X-Line-Signature","")):abort(400)
-    for e in (request.get_json(silent=True) or {}).get("events",[]):
-        if e.get("type")!="message":continue
-        m=e.get("message",{}); typ=m.get("type")
-        if typ not in ("text","image","file"):continue
-        cid,uid=ids(e); nm=name(e); eid=e.get("webhookEventId") or m.get("id"); mid=m.get("id")
+    if not hmac.compare_digest(expected,request.headers.get('X-Line-Signature','')): abort(400)
+    for e in (request.get_json(silent=True) or {}).get('events',[]):
+        if e.get('type')!='message': continue
+        m=e.get('message',{}); typ=m.get('type')
+        if typ not in ('text','image','file'): continue
+        cid,uid=ids(e); nm=name(e); eid=e.get('webhookEventId') or m.get('id'); mid=m.get('id')
         remember_line_member(cid,uid,nm)
-        qid=m.get("quotedMessageId")
-
-        if typ in ("image","file"):
+        qid=m.get('quotedMessageId')
+        if typ in ('image','file'):
             rawmedia,mime=content(mid)
-            if not rawmedia:continue
-            filename=(m.get("fileName") or "").lower()
-            is_pdf=(typ=="file" and (filename.endswith(".pdf") or "pdf" in (mime or "").lower()))
-            if typ=="file" and not is_pdf:
-                reply(e.get("replyToken"),"今は画像とPDFを読めるよ🧭 このファイル形式はまだ未対応。")
+            if not rawmedia: continue
+            filename=(m.get('fileName') or '').lower()
+            is_pdf=typ=='file' and (filename.endswith('.pdf') or 'pdf' in (mime or '').lower())
+            if typ=='file' and not is_pdf:
+                reply(e.get('replyToken'),'今は画像とPDFを読めるよ🧭 このファイル形式はまだ未対応。')
                 continue
-            a=analyze(rawmedia,"application/pdf" if is_pdf else mime,uid,cid)
-            save_image(cid,uid,mid,a)
-            add_estimate_batch_item(cid,uid,mid,a)
-            label="PDF解析" if is_pdf else "画像解析"
-            save_msg(eid,cid,uid,nm,"user",f"[{label}]\n"+a,"file" if is_pdf else "image",mid,qid)
+            a=analyze(rawmedia,'application/pdf' if is_pdf else mime,uid,cid)
+            save_image(cid,uid,mid,a); add_estimate_batch_item(cid,uid,mid,a)
+            label='PDF解析' if is_pdf else '画像解析'
+            save_msg(eid,cid,uid,nm,'user',f'[{label}]\\n'+a,'file' if is_pdf else 'image',mid,qid)
             if not grouped(e):
-                # Keep the detailed extraction internally for the estimate tool.
-                # Do not dump raw listing analysis into LINE; the next estimate
-                # instruction renders the canonical concise estimate instead.
-                received="資料を読み取ったよ🧭 見積もり条件を送ってね。"
-                save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",received)
-                reply(e.get("replyToken"),received)
+                received='資料を読み取ったよ🧭 見積もり条件を送ってね。'
+                save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',received)
+                reply(e.get('replyToken'),received)
             continue
-
-        text=m.get("text","")
-        save_msg(eid,cid,uid,nm,"user",text,"text",mid,qid)
-        # Owner self-improvement is classified before durable learning. This prevents
-        # code/PR instructions from being accidentally stored as personal/group memory.
-        semantic_route = semantic_intent_route(text,uid,cid) if can_self_improve(uid) else "chat"
-        owner_self_improve = semantic_route == "self_improve"
-        ambiguous_change = semantic_route == "ask"
-        if not owner_self_improve and semantic_route in ("memory","chat"):
+        text=m.get('text','')
+        save_msg(eid,cid,uid,nm,'user',text,'text',mid,qid)
+        if (text or '').strip()=='おやすみ':
+            ans='おやすみ船長🌙'
+            save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',ans)
+            reply(e.get('replyToken'),ans)
+            continue
+        semantic_route=semantic_intent_route(text,uid,cid) if can_self_improve(uid) else 'chat'
+        owner_self_improve=semantic_route=='self_improve'
+        ambiguous_change=semantic_route=='ask'
+        if not owner_self_improve and semantic_route in ('memory','chat'):
             learn_important(text,uid,cid)
-
         if grouped(e) and not called(m):
             proactive=manager_review(text,uid,cid)
             if proactive:
-                save_msg("assistant:manager:"+eid,cid,"bot","航海士ナミ","assistant",proactive)
-                reply(e.get("replyToken"),proactive)
+                save_msg('assistant:manager:'+eid,cid,'bot','航海士ナミ','assistant',proactive)
+                reply(e.get('replyToken'),proactive)
             continue
-
         batch_answer=None
         if is_batch_estimate_command(text):
             items=recent_estimate_batch(cid)
             if not items:
-                batch_answer="直近15分の見積資料が見つからないよ。PDFや画像をまとめて送ってから『ナミ、まとめて見積もり』と送ってね。"
+                batch_answer='直近15分の見積資料が見つからないよ。PDFや画像をまとめて送ってから『ナミ、まとめて見積もり』と送ってね。'
             else:
                 groups,ambiguous=group_attachments(items)
-                if ambiguous:
-                    batch_answer="資料の一部で物件を特定できませんでした。どの物件の資料か指定してください。"
-                else:
-                    batch_answer=batch_estimates_using_single(groups,text,uid,cid)
-                    clear_estimate_batch(cid)
+                batch_answer='資料の一部で物件を特定できませんでした。どの物件の資料か指定してください。' if ambiguous else batch_estimates_using_single(groups,text,uid,cid)
+                if not ambiguous: clear_estimate_batch(cid)
         reminder_done=complete_member_reminder(cid,text)
         reminder_timing_missing=reminder_needs_timing(text)
         member_task=parse_member_task(text) if reminder_has_enough_context(text) else None
@@ -1458,121 +1450,86 @@ def webhook():
             assignee,steps,interval=member_task
             reminder_created=create_member_reminder(cid,line_target(e),uid,assignee,steps,interval)
         quick_task=task_command(text,uid,cid)
-        # Estimate requests must bypass the legacy document command entirely.
-        # The legacy estimate path can call obsolete helpers before the canonical
-        # structured estimate route gets a chance to run.
-        estimate_intent=bool(re.search(r"(見積|初期費用)",text,re.I) or (re.search(r"仲介.{0,8}(?:半額|無料|割引)",text,re.I) and re.search(r"(画像|PNG|PDF|作って|出して)",text,re.I)))
+        estimate_intent=bool(re.search(r'(見積|初期費用)',text,re.I) or (re.search(r'仲介.{0,8}(?:半額|無料|割引)',text,re.I) and re.search(r'(画像|PNG|PDF|作って|出して)',text,re.I)))
         quick_doc=None if estimate_intent else three_document_command(text,uid,cid,qid)
-        # Estimate is a tool, never a free-form chat answer. Force it after legacy parsing so
-        # an older document route cannot preempt the canonical estimate engine.
-        estimate_intent=bool(re.search(r"(見積|初期費用)",text,re.I) or (re.search(r"仲介.{0,8}(?:半額|無料|割引)",text,re.I) and re.search(r"(画像|PNG|PDF|作って|出して)",text,re.I)))
         if estimate_intent:
             latest_material=image_analysis(cid,qid) if qid else image_analysis(cid)
             if latest_material:
                 try:
                     estimate_data,estimate_text=structured_estimate(ai,text,latest_material,uid,cid)
-                    wants_image=bool(re.search(r"(画像|PNG|写真)",text,re.I))
-                    wants_pdf=bool(re.search(r"PDF",text,re.I))
-                    marker="__ESTIMATE_BOTH__" if wants_image and wants_pdf else ("__ESTIMATE_PDF__" if wants_pdf else ("__ESTIMATE_IMAGE__" if wants_image else None))
+                    wants_image=bool(re.search(r'(画像|PNG|写真)',text,re.I)); wants_pdf=bool(re.search(r'PDF',text,re.I))
+                    marker='__ESTIMATE_BOTH__' if wants_image and wants_pdf else ('__ESTIMATE_PDF__' if wants_pdf else ('__ESTIMATE_IMAGE__' if wants_image else None))
                     quick_doc=(marker,estimate_data,estimate_text) if marker else estimate_text
                 except Exception as x:
-                    print("structured_estimate_forced",repr(x),flush=True)
-                    quick_doc="見積データの生成でエラーが出た。通常チャットでは代替せず停止したよ。"
+                    print('structured_estimate_forced',repr(x),flush=True)
+                    quick_doc='見積データの生成でエラーが出た。通常チャットでは代替せず停止したよ。'
             else:
-                quick_doc="見積書を作る募集図面・PDF・文面が見つからないよ。資料を送ってから見積を指示してね。"
+                quick_doc='見積書を作る募集図面・PDF・文面が見つからないよ。資料を送ってから見積を指示してね。'
         awaiting=latest_awaiting(cid,uid)
-        if ambiguous_change:
-            ans="これは会話の設定として覚える？それともナミ自身の機能として改善する？🧭"
-        elif batch_answer:
-            ans=batch_answer
-        elif reminder_done:
-            ans=reminder_done
-        elif reminder_timing_missing:
-            ans="リマインドする間隔を指定してね。例：『10分おきにリマインドして』"
+        if ambiguous_change: ans='これは会話の設定として覚える？それともナミ自身の機能として改善する？🧭'
+        elif batch_answer: ans=batch_answer
+        elif reminder_done: ans=reminder_done
+        elif reminder_timing_missing: ans='リマインドする間隔を指定してね。例：『10分おきにリマインドして』'
         elif reminder_created:
             assignee,steps,interval=member_task
-            ans=f"{assignee}のタスクを登録しました。まず「{steps[0]}」を{interval}分おきに、完了報告があるまでリマインドします。"
-        elif quick_task:
-            ans=quick_task
+            ans=f'{assignee}のタスクを登録しました。まず「{steps[0]}」を{interval}分おきに、完了報告があるまでリマインドします。'
+        elif quick_task: ans=quick_task
         elif quick_doc:
             if isinstance(quick_doc,tuple) and quick_doc[0] in ('__ESTIMATE_IMAGE__','__ESTIMATE_PDF__','__ESTIMATE_BOTH__'):
-                estimate_data=quick_doc[1]
-                estimate_text=quick_doc[2]
-                key=hashlib.sha256((eid+str(time.time())).encode()).hexdigest()[:24]
-                ESTIMATE_CACHE[key]=(time.time(),estimate_data)
-                base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')
-                save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",estimate_text)
-                reply_estimate_artifact(e.get("replyToken"),base,key,quick_doc[0])
-                continue
+                estimate_data,estimate_text=quick_doc[1],quick_doc[2]
+                key=hashlib.sha256((eid+str(time.time())).encode()).hexdigest()[:24]; ESTIMATE_CACHE[key]=(time.time(),estimate_data)
+                base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
+                save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',estimate_text)
+                reply_estimate_artifact(e.get('replyToken'),base,key,quick_doc[0]); continue
             elif isinstance(quick_doc,tuple) and quick_doc[0]=='__PDF__':
-                _,pdf_kind,pdf_data=quick_doc;make_pdf(pdf_kind,pdf_data)
-                ans=pdf_kind+'の内容を作成したよ🧭\n'+pdf_data.get('description','')
-            else:ans=quick_doc
-        elif awaiting and can_self_improve(uid) and re.search(r"^(ナミ[、, ]*)?(反映して|承認|OK|おけ|やって)$",text.strip(),re.I):
+                _,pdf_kind,pdf_data=quick_doc; make_pdf(pdf_kind,pdf_data); ans=pdf_kind+'の内容を作成したよ🧭\\n'+pdf_data.get('description','')
+            else: ans=quick_doc
+        elif awaiting and can_self_improve(uid) and re.search(r'^(ナミ[、, ]*)?(反映して|承認|OK|おけ|やって)$',text.strip(),re.I):
             try:
                 ok,msg=merge_pr(awaiting[2])
-                if ok:set_improvement_status(awaiting[0],"merged")
+                if ok: set_improvement_status(awaiting[0],'merged')
                 ans=msg
             except Exception as x:
-                print("merge_pr",repr(x),flush=True)
-                ans="反映処理でエラー。既存本番は変更していないよ。"
+                print('merge_pr',repr(x),flush=True); ans='反映処理でエラー。既存本番は変更していないよ。'
         elif owner_self_improve:
-            plan=improvement_plan(text,uid,cid)
-            rid=add_improvement(cid,uid,text,plan)
+            plan=improvement_plan(text,uid,cid); rid=add_improvement(cid,uid,text,plan)
             if github_ready():
                 try:
                     pr,err=create_pr(text)
                     if pr:
-                        attach_pr(rid,pr[0],pr[1])
-                        ans=(f"改善候補を作ったよ🧭 ID:{rid}\n\n{plan}\n\n"
-                             f"PR #{pr[0]} 作成済み。必須機能ガードを通過。"
-                             "内容を反映するなら「反映して」と言ってね。")
-                    else: ans="改善要求は保存したけど、"+err
+                        attach_pr(rid,pr[0],pr[1]); ans=f'改善候補を作ったよ🧭 ID:{rid}\\n\\n{plan}\\n\\nPR #{pr[0]} 作成済み。必須機能ガードを通過。内容を反映するなら「反映して」と言ってね。'
+                    else: ans='改善要求は保存したけど、'+err
                 except Exception as x:
-                    print("create_pr",repr(x),flush=True)
-                    ans="改善要求は保存したけどPR作成で停止。既存本番は変更していないよ。"
+                    print('create_pr',repr(x),flush=True); ans='改善要求は保存したけどPR作成で停止。既存本番は変更していないよ。'
             else:
-                ans=(f"改善要求を保存したよ🧭 ID:{rid}\n\n{plan}\n\n"
-                     "GitHub自己改善は未接続。RenderにGITHUB_TOKEN / GITHUB_REPO / SELF_IMPROVE=trueを設定すると有効になる。")
+                ans=f'改善要求を保存したよ🧭 ID:{rid}\\n\\n{plan}\\n\\nGitHub自己改善は未接続。RenderにGITHUB_TOKEN / GITHUB_REPO / SELF_IMPROVE=trueを設定すると有効になる。'
         else:
-            source_type=(e.get("source") or {}).get("type","user")
-            taught=explicit_learning(text,uid,cid,source_type)
+            source_type=(e.get('source') or {}).get('type','user'); taught=explicit_learning(text,uid,cid,source_type)
             if taught: ans=taught
             else:
-                # Reply to an image/PDF: fetch the original quoted media and answer from the actual bytes.
-                # This avoids relying only on an older saved summary when the user asks a new question.
-                quoted_saved=image_analysis(cid,qid) if qid else None
-                quoted_blob=quoted_mime=None
-                if qid:
-                    quoted_blob,quoted_mime=content(qid)
+                quoted_saved=image_analysis(cid,qid) if qid else None; quoted_blob=quoted_mime=None
+                if qid: quoted_blob,quoted_mime=content(qid)
                 if quoted_blob:
-                    # LINE may return application/octet-stream for files, so detect PDF by signature too.
-                    is_quoted_pdf=(quoted_blob[:5]==b"%PDF-") or (quoted_mime and "pdf" in quoted_mime.lower())
-                    media_mime="application/pdf" if is_quoted_pdf else quoted_mime
-                    ans=analyze(quoted_blob,media_mime,uid,cid,question=text)
+                    is_quoted_pdf=quoted_blob[:5]==b'%PDF-' or (quoted_mime and 'pdf' in quoted_mime.lower())
+                    ans=analyze(quoted_blob,'application/pdf' if is_quoted_pdf else quoted_mime,uid,cid,question=text)
                 else:
-                    latest=image_analysis(cid) if re.search(r"(この|図面|画像|写真|PDF|資料|見積)",text,re.I) else None
-                    chosen=quoted_saved or latest
-                    extra=f"\n【参照資料の解析】\n{chosen}" if chosen else ""
+                    latest=image_analysis(cid) if re.search(r'(この|図面|画像|写真|PDF|資料|見積)',text,re.I) else None
+                    chosen=quoted_saved or latest; extra=f'\\n【参照資料の解析】\\n{chosen}' if chosen else ''
                     ans=ai(text,uid,cid,extra=extra)
-
         batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None
         if batch_marker and isinstance(batch_answer,list):
-            base=os.getenv("PUBLIC_BASE_URL","https://koukaisi-nami.onrender.com").rstrip('/')
-            saved_ans="\n\n".join((x.get('text','') if isinstance(x,dict) else str(x)) for x in batch_answer)
-            save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
-            send_batch_estimate_artifacts(e.get("replyToken"),line_target(e),batch_answer,base,batch_marker)
-            continue
-        saved_ans="\n\n".join((x.get('text','') if isinstance(x,dict) else str(x)) for x in ans) if isinstance(ans,(list,tuple)) else ans
-        save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
+            base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
+            saved_ans='\\n\\n'.join((x.get('text','') if isinstance(x,dict) else str(x)) for x in batch_answer)
+            save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',saved_ans)
+            send_batch_estimate_artifacts(e.get('replyToken'),line_target(e),batch_answer,base,batch_marker); continue
+        saved_ans='\\n\\n'.join((x.get('text','') if isinstance(x,dict) else str(x)) for x in ans) if isinstance(ans,(list,tuple)) else ans
+        save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',saved_ans)
         if isinstance(ans,list):
             target=line_target(e)
-            if ans:
-                reply(e.get("replyToken"),ans[0].get('text','') if isinstance(ans[0],dict) else ans[0])
-                for item in ans[1:]:push_line(target,item.get('text','') if isinstance(item,dict) else item)
-        else:
-            reply(e.get("replyToken"),ans)
-    return "OK",200
+            if ans: reply(e.get('replyToken'),ans[0].get('text','') if isinstance(ans[0],dict) else ans[0])
+            for item in ans[1:]: push_line(target,item.get('text','') if isinstance(item,dict) else item)
+        else: reply(e.get('replyToken'),ans)
+    return 'OK',200
 
 try:
     init_db()
