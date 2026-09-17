@@ -1,0 +1,30 @@
+name: Apply estimate format rules
+on:
+  push:
+    branches: [chapi-estimate-format-rules]
+    paths: [patch_estimate_format.py, estimate_format_trigger.txt]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-estimate-format-rules
+      - run: python patch_estimate_format.py
+      - name: Validate
+        run: |
+          python -m py_compile app.py
+          grep -q '当月前家賃' app.py
+          grep -q '次月前家賃' app.py
+          grep -q '管理費・共益費は前家賃に含めます' app.py
+          grep -q '入居日の指定がない場合は必ず' app.py
+      - name: Commit
+        run: |
+          git config user.name 'Chapi'
+          git config user.email 'actions@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Apply customer estimate format rules'
+          git push origin HEAD:chapi-estimate-format-rules
