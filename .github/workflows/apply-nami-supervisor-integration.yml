@@ -24,7 +24,8 @@ jobs:
           python -m py_compile app.py nami_supervisor.py
           grep -q 'from nami_supervisor import' app.py
           grep -q 'def explicit_learning(text,uid,cid=None,source_type="user")' app.py
-          grep -q 'route_intent(text,is_owner=can_self_improve(uid))' app.py
+          grep -q 'taught=explicit_learning(text,uid,cid,source_type)' app.py
+          grep -q 'if not can_self_improve(uid)' app.py
       - name: Run supervisor tests
         run: |
           python -m pip install pytest
