@@ -1002,6 +1002,10 @@ def explicit_learning(text,uid,cid=None,source_type="user"):
     if not t:
         return None
 
+    # 機能確認用。記憶へ保存せず、固定応答だけを返す。
+    if t == "テスト":
+        return "航海テスト成功🧭"
+
     company_scope=re.search(r"(全社|全社共通|会社全体|社内共通|全グループ|会社ルール|弊社ルール)",t,re.I)
     if company_scope:
         if not can_self_improve(uid):
