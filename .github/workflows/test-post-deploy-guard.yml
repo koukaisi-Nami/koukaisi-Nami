@@ -1,0 +1,36 @@
+name: Test post deploy guard
+on:
+  push:
+    branches: [chapi/post-deploy-safety-v1]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Compile and safety assertions
+        run: |
+          python -m py_compile app.py scripts/post_deploy_guard.py
+          python - <<'PY'
+          import ast
+          s=open('scripts/post_deploy_guard.py').read(); ast.parse(s)
+          w=open('.github/workflows/post-deploy-guard.yml').read()
+          assert 'branches: [main]' in w
+          assert 'cancel-in-progress: false' in w
+          assert "git','revert','--no-edit'" in s
+          assert "HEAD:main" in s
+          assert 'LINE_CHANNEL_ACCESS_TOKEN' in s
+          assert 'NAMI_OWNER_LINE_USER_ID' in s
+          assert 'DROP TABLE' not in s.upper() and 'DELETE FROM MEMORIES' not in s.upper()
+          assert 'force' not in s.lower()
+          print('guard regression OK')
+          PY
+      - name: Existing critical regressions
+        run: |
+          python -m pip install -q pytest
+          pytest -q test_nami_supervisor.py tests/test_supervisor_review_runtime.py
+          python -m unittest tests.test_owner_guard
