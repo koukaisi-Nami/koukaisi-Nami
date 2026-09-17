@@ -1,0 +1,24 @@
+name: Apply reminder explicit-only cleanup
+on:
+  push:
+    branches: [chapi-reminder-explicit-only-cleanup]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest
+      - run: python patch_reminder_explicit_only_cleanup.py
+      - run: python -m py_compile app.py intent_router.py
+      - run: pytest -q test_intent_router.py test_reminder_explicit_only.py
+      - name: Commit integrated app
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Make reminders explicit-only and cancel legacy reminders'
+          git push
