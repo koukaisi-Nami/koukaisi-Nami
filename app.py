@@ -2,7 +2,7 @@ import os, re, json, base64, hashlib, hmac, requests, psycopg, ast, time, thread
 from io import BytesIO
 from datetime import datetime, timedelta
 from functools import wraps
-from intent_router import should_create_reminder, reminder_has_enough_context, reminder_needs_timing
+from intent_router import should_create_reminder, reminder_has_enough_context, reminder_needs_timing, reminder_needs_timing
 from flask import Flask, request, abort, Response, render_template_string, send_file
 
 app = Flask(__name__)
@@ -113,6 +113,9 @@ def init_db():
               current_index INTEGER DEFAULT 0,interval_minutes INTEGER DEFAULT 10,
               next_run_at TIMESTAMPTZ,status TEXT DEFAULT 'active',last_error TEXT DEFAULT '',
               created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            c.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS explicit_opt_in BOOLEAN DEFAULT FALSE")
+            # Kill every legacy reminder created before explicit opt-in existed.
+            c.execute("UPDATE reminders SET status='cancelled',next_run_at=NULL,updated_at=NOW() WHERE status='active' AND COALESCE(explicit_opt_in,FALSE)=FALSE")
             c.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS explicit_opt_in BOOLEAN DEFAULT FALSE")
             # Kill every legacy reminder created before explicit opt-in existed.
             c.execute("UPDATE reminders SET status='cancelled',next_run_at=NULL,updated_at=NOW() WHERE status='active' AND COALESCE(explicit_opt_in,FALSE)=FALSE")
