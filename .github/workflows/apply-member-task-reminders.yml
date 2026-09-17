@@ -1,0 +1,30 @@
+name: Apply member task reminders
+on:
+  push:
+    branches: [chapi-member-task-reminders]
+    paths: [patch_member_task_reminders.py, reminder_trigger.txt]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: chapi-member-task-reminders}
+      - run: python patch_member_task_reminders.py
+      - run: python -m py_compile app.py
+      - name: Validate reminder features
+        run: |
+          grep -q 'CREATE TABLE IF NOT EXISTS reminders' app.py
+          grep -q 'def push_line' app.py
+          grep -q 'def reminder_loop' app.py
+          grep -q 'def complete_member_reminder' app.py
+          grep -q 'FOR UPDATE SKIP LOCKED' app.py
+      - name: Commit applied app
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Implement persistent LINE member task reminders'
+          git push origin HEAD:chapi-member-task-reminders
