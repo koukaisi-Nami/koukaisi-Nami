@@ -1,0 +1,34 @@
+name: Apply batch use single estimate
+on:
+  push:
+    branches: [chapi-batch-use-single-estimate]
+    paths:
+      - patch_batch_use_single.py
+      - .github/workflows/apply-batch-use-single-estimate.yml
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-batch-use-single-estimate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python patch_batch_use_single.py
+      - run: python -m py_compile app.py
+      - name: Verify shared rules
+        run: |
+          grep -q 'def single_estimate_prompt' app.py
+          grep -q 'batch_estimates_using_single' app.py
+          grep -q '火災保険（仮）：20,000円' app.py
+          grep -q '初回保証料（仮）' app.py
+      - name: Commit generated app
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Apply shared single estimate rules to batch estimates'
+          git push
