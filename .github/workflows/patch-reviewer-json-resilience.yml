@@ -1,15 +1,20 @@
 name: Patch reviewer JSON resilience
+
 on:
   push:
-    branches: [chapi/reviewer-json-resilience-v1]
+    branches:
+      - chapi/reviewer-json-resilience-v1
+
 permissions:
   contents: write
+
 jobs:
   patch:
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+    if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Patch supervisor reviewer
         run: |
           python - <<'PY'
@@ -21,7 +26,7 @@ jobs:
           end=s.index('\ndef reviewed_candidate(req_text):', start)
           old=s[start:end]
           new=r'''def _parse_supervisor_json(raw):
-    """Parse reviewer output defensively; tolerate markdown fences and truncated JSON."""
+    """Parse reviewer output defensively; tolerate fences and safely salvage truncation."""
     raw=(raw or '').strip()
     raw=re.sub(r"^```(?:json)?\s*|\s*```$",'',raw.strip())
     try:
@@ -29,12 +34,14 @@ jobs:
     except Exception:
         action=re.search(r'"action"\s*:\s*"(approve|fix)"',raw,re.I)
         feedback=re.search(r'"feedback"\s*:\s*"((?:\\.|[^"\\])*)',raw,re.I|re.S)
-        if action:
-            fb=feedback.group(1) if feedback else ''
-            try: fb=json.loads('"'+fb+'"') if fb else ''
-            except Exception: fb=fb.replace('\\"','"').replace('\\n','\n')
-            return {'action':action.group(1).lower(),'feedback':fb}
-        raise
+        if not action:
+            raise
+        fb=feedback.group(1) if feedback else ''
+        try:
+            fb=json.loads('"'+fb+'"') if fb else ''
+        except Exception:
+            fb=fb.replace('\\"','"').replace('\\n','\n')
+        return {'action':action.group(1).lower(),'feedback':fb}
 
 def supervisor_review(req_text,current,candidate,attempt):
     """Review proposed code with bounded recovery for empty/malformed/truncated JSON."""
@@ -81,8 +88,49 @@ JSONのみ: {\"action\":\"approve|fix\",\"feedback\":\"具体的な理由と修�
           p.write_text(s[:start]+new+s[end:])
           print('patched supervisor_review')
           PY
+
       - name: Syntax check
         run: python -m py_compile app.py
+
+      - name: Parser regression tests
+        run: |
+          python - <<'PY'
+          import ast, json, re
+          from pathlib import Path
+          src=Path('app.py').read_text()
+          tree=ast.parse(src)
+          node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_parse_supervisor_json')
+          ns={'json':json,'re':re}
+          exec(compile(ast.Module(body=[node],type_ignores=[]),'<parser>','exec'),ns)
+          parse=ns['_parse_supervisor_json']
+          assert parse('{"action":"approve","feedback":"ok"}')['action']=='approve'
+          assert parse('```json\n{"action":"fix","feedback":"直して"}\n```')['action']=='fix'
+          assert parse('{"action":"approve","feedback":"途中で切れた')['action']=='approve'
+          assert parse('{"action":"fix","feedback":"A\\nB')['feedback']=='A\nB'
+          try:
+              parse('{"action":"unknown","feedback":"x"}')
+              raise AssertionError('invalid action must not be salvaged')
+          except Exception:
+              pass
+          print('parser regression tests passed')
+          PY
+
+      - name: Safety assertions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('app.py').read_text()
+          start=s.index('def supervisor_review(req_text,current,candidate,attempt):')
+          end=s.index('\ndef reviewed_candidate(req_text):', start)
+          f=s[start:end]
+          assert 'for retry in range(1,4)' in f
+          assert 'max_output_tokens' in f
+          assert 'timeout=120' in f
+          assert 'action not in ("approve","fix")' in f
+          assert 'merge' not in f.lower()
+          print('safety assertions passed')
+          PY
+
       - name: Commit patch
         run: |
           git config user.name 'nami-review-guard'
