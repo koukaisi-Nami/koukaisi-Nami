@@ -1,0 +1,31 @@
+name: Apply final estimate implementation
+on:
+  push:
+    branches: [chapi-estimate-final-image]
+    paths: [patch_estimate_final.py, estimate_final_trigger.txt]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: chapi-estimate-final-image}
+      - run: python patch_estimate_final.py
+      - run: python -m py_compile app.py
+      - name: Validate customer estimate rules
+        run: |
+          grep -q "初回保証料" app.py
+          grep -q "当月前家賃" app.py
+          grep -q "次月前家賃" app.py
+          grep -q "仲介手数料の内訳" app.py
+          grep -q "管理費・共益費は前家賃に含めます" app.py
+          grep -q "入居日の指定がない場合は必ず" app.py
+      - name: Commit applied app
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Finalize concise customer estimate format'
+          git push origin HEAD:chapi-estimate-final-image

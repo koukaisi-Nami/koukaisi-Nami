@@ -106,6 +106,8 @@ def init_db():
               conversation_id TEXT PRIMARY KEY,last_checked_at TIMESTAMPTZ DEFAULT NOW())""")
             c.execute("CREATE INDEX IF NOT EXISTS cases_updated_idx ON cases(updated_at DESC)")
             c.execute("CREATE INDEX IF NOT EXISTS tasks_open_idx ON tasks(status,due_date)")
+            c.execute("""CREATE TABLE IF NOT EXISTS estimate_drafts(
+              conversation_id TEXT PRIMARY KEY,user_id TEXT,data JSONB NOT NULL DEFAULT '{}'::jsonb,updated_at TIMESTAMPTZ DEFAULT NOW())""")
         cn.commit()
 
 def save_msg(eid,cid,uid,name,role,content,mtype="text",mid=None,qid=None):
@@ -697,7 +699,7 @@ def three_document_command(text,uid,cid,qid=None):
     wants_pdf=bool(re.search(r"(PDF|pdf|書類|発行)",clean))
     if kind=="estimate" and not wants_image and not wants_pdf:
         prompt=("募集図面の読取結果から、お客様へそのままLINE転送できる初期費用の概算を作成してください。短く見やすく丁寧にし、Markdown表、計算過程、内部事情、前回回答への言及は禁止です。\n"
-                "表示項目と順番は必ず次で固定：当月前家賃、次月前家賃、敷金、礼金、初回保証料、仲介手数料、火災保険、24時間サポート、鍵交換、事務手数料、合計。該当しない又は金額不明の項目も省略せず「－」と表示してください。\n"
+                "表示項目と順番は必ず次で固定：当月前家賃、次月前家賃、敷金、礼金、初回保証料、仲介手数料、火災保険、24時間サポート、鍵交換、事務手数料、合計。該当しない又は金額不明の項目も省略せず「－」と表示してください。仲介手数料の内訳・消費税内訳・計算説明・別途確認一覧は出さないでください。保証料の表示名は必ず「初回保証料」にしてください。\n"
                 "管理費・共益費は前家賃に含めます。当月前家賃は入居日の指定がない場合は必ず「－」。入居日の指定がある場合のみ賃料＋管理費・共益費を日割り計算してください。次月前家賃は賃料＋管理費・共益費で計算してください。\n"
                 "仲介手数料はユーザーが『0.5ヶ月』『なし』『5万円』など指定した場合、その指定を最優先して再計算してください。指定がなく図面や保存済み会社ルールでも確定できない場合は「－」とし、勝手に推測しないでください。\n"
                 "火災保険等も不明なら「－」。合計は金額が確定している項目だけをPythonで足した場合と整合するよう計算し、不明項目を含めないでください。末尾に『※入居日・仲介手数料・不明項目をご指定いただければ再計算できます。』と短く付けてください。")
@@ -915,7 +917,7 @@ def webhook():
             ans=quick_task
         elif quick_doc:
             if isinstance(quick_doc,tuple) and quick_doc[0]=='__ESTIMATE_IMAGE__':
-                ans='見積もり画像用の内容を作成したよ🧭\n'+quick_doc[1]+'\n※画像は固定テンプレート描画で金額を変えずに生成する仕様です。'
+                ans='【初期費用概算】\n'+quick_doc[1]+'\n\n※見積もり画像の固定テンプレート生成準備済み。'
             elif isinstance(quick_doc,tuple) and quick_doc[0]=='__PDF__':
                 _,pdf_kind,pdf_data=quick_doc;make_pdf(pdf_kind,pdf_data)
                 ans=pdf_kind+'の内容を作成したよ🧭\n'+pdf_data.get('description','')
