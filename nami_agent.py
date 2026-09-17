@@ -33,13 +33,16 @@ def normalize_plan(data, text=""):
     outputs=[x for x in outputs if x in ALLOWED_OUTPUTS] or ["text"]
     # Preserve order without duplicates.
     outputs=list(dict.fromkeys(outputs))
+    raw_confidence=data.get("confidence",0.5)
+    if raw_confidence is None or raw_confidence == "":
+        raw_confidence=0.5
     return {
         "tool":tool,
         "outputs":outputs,
         "batch":bool(data.get("batch",False)),
         "needs_recent_media":bool(data.get("needs_recent_media",False)),
         "instruction":str(data.get("instruction") or text or "")[:4000],
-        "confidence":max(0.0,min(1.0,float(data.get("confidence",0.5) or 0.5))),
+        "confidence":max(0.0,min(1.0,float(raw_confidence))),
     }
 
 
