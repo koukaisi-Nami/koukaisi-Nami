@@ -19,7 +19,7 @@ jobs:
         run: echo 'Patch commit already applied; nothing to do.'
 
       - name: Patch supervisor reviewer
-        if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -94,11 +94,11 @@ JSONのみ: {\"action\":\"approve|fix\",\"feedback\":\"具体的な理由と修�
           PY
 
       - name: Syntax check
-        if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
         run: python -m py_compile app.py
 
       - name: Parser regression tests
-        if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
         run: |
           python - <<'PY'
           import ast, json, re
@@ -122,7 +122,7 @@ JSONのみ: {\"action\":\"approve|fix\",\"feedback\":\"具体的な理由と修�
           PY
 
       - name: Safety assertions
-        if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -139,7 +139,7 @@ JSONのみ: {\"action\":\"approve|fix\",\"feedback\":\"具体的な理由と修�
           PY
 
       - name: Commit patch
-        if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
         run: |
           git config user.name 'nami-review-guard'
           git config user.email 'nami-review-guard@users.noreply.github.com'
