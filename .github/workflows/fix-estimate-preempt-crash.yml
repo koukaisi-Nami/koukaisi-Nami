@@ -1,0 +1,54 @@
+name: Fix estimate preempt crash
+on:
+  push:
+    branches: [fix/estimate-preempt-crash]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/estimate-preempt-crash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install renderer dependencies
+        run: pip install reportlab pillow pymupdf
+      - name: Apply hotfix
+        run: python scripts/fix_estimate_preempt_crash.py
+      - name: Syntax and routing regression
+        run: |
+          python -m py_compile app.py structured_estimate_runtime.py estimate_model.py estimate_document.py
+          grep -q 'quick_doc=None if estimate_intent else three_document_command' app.py
+          python - <<'PY'
+          from estimate_model import normalize_estimate, estimate_to_text
+          from estimate_document import make_estimate_document, make_estimate_image
+          d=normalize_estimate({'property':'ALTERNA銀座 904号室','move_in':'15日','items':[
+            {'key':'current_rent','label':'当月前家賃','amount':142400,'breakdown':'日割り16日分'},
+            {'key':'next_rent','label':'次月前家賃','amount':267000},
+            {'key':'deposit','label':'敷金','amount':0},
+            {'key':'key_money','label':'礼金','amount':0},
+            {'key':'guarantee','label':'初回保証料（仮）','amount':133500,'breakdown':'概算'},
+            {'key':'brokerage','label':'仲介手数料','original_amount':273900,'discount_amount':136950,'amount':136950,'breakdown':'半額'},
+            {'key':'insurance','label':'火災保険','amount':28000},
+            {'key':'support','label':'24時間サポート','amount':16500},
+            {'key':'key_exchange','label':'鍵交換','amount':24200},
+            {'key':'admin','label':'事務手数料','amount':3300}]})
+          assert d['total']==751850, d['total']
+          text=estimate_to_text(d)
+          assert '日割り16日分' in text and '通常273,900円' in text and '割引136,950円' in text
+          assert len(make_estimate_document(d).getvalue())>1000
+          assert len(make_estimate_image(d).getvalue())>1000
+          print('BASELINE_OK')
+          PY
+      - name: Commit runtime hotfix
+        run: |
+          git config user.name 'nami-ci'
+          git config user.email 'nami-ci@users.noreply.github.com'
+          git add app.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Bypass legacy estimate route before canonical tool'
+          git push origin HEAD:fix/estimate-preempt-crash

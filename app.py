@@ -1257,7 +1257,11 @@ def webhook():
             assignee,steps,interval=member_task
             reminder_created=create_member_reminder(cid,line_target(e),uid,assignee,steps,interval)
         quick_task=task_command(text,uid,cid)
-        quick_doc=three_document_command(text,uid,cid,qid)
+        # Estimate requests must bypass the legacy document command entirely.
+        # The legacy estimate path can call obsolete helpers before the canonical
+        # structured estimate route gets a chance to run.
+        estimate_intent=bool(re.search(r"(見積|初期費用)",text,re.I) or (re.search(r"仲介.{0,8}(?:半額|無料|割引)",text,re.I) and re.search(r"(画像|PNG|PDF|作って|出して)",text,re.I)))
+        quick_doc=None if estimate_intent else three_document_command(text,uid,cid,qid)
         # Estimate is a tool, never a free-form chat answer. Force it after legacy parsing so
         # an older document route cannot preempt the canonical estimate engine.
         estimate_intent=bool(re.search(r"(見積|初期費用)",text,re.I) or (re.search(r"仲介.{0,8}(?:半額|無料|割引)",text,re.I) and re.search(r"(画像|PNG|PDF|作って|出して)",text,re.I)))
