@@ -1,0 +1,29 @@
+name: Post deploy guard
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: nami-production-guard
+  cancel-in-progress: false
+jobs:
+  verify-production:
+    if: ${{ !startsWith(github.event.head_commit.message, 'Revert ') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Preflight
+        run: python -m py_compile app.py scripts/post_deploy_guard.py
+      - name: Verify production and rollback on failure
+        env:
+          NAMI_HEALTH_URL: https://koukaisi-nami.onrender.com/
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          NAMI_OWNER_LINE_USER_ID: ${{ secrets.NAMI_OWNER_LINE_USER_ID }}
+        run: python scripts/post_deploy_guard.py
