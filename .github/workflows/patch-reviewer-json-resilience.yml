@@ -1,148 +1,41 @@
-name: Patch reviewer JSON resilience
+name: Reviewer JSON resilience CI
 
 on:
   push:
     branches:
       - chapi/reviewer-json-resilience-v1
+  pull_request:
+    branches:
+      - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch:
+  test-reviewer-parser:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Skip generated patch commit
-        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
-        run: echo 'Patch commit already applied; nothing to do.'
-
-      - name: Patch supervisor reviewer
-        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile app.py nami_supervisor.py tests/test_reviewer_json_resilience.py
+      - name: Reviewer JSON regression tests
+        run: python -m unittest -v tests/test_reviewer_json_resilience.py
+      - name: Existing supervisor and owner guards
+        run: |
+          python -m unittest -v tests.test_owner_guard
+          python -m unittest -v tests.test_supervisor_review_runtime
+      - name: Safety invariants
         run: |
           python - <<'PY'
           from pathlib import Path
-          import json, re
-          p=Path('app.py')
-          s=p.read_text()
-          start=s.index('def supervisor_review(req_text,current,candidate,attempt):')
-          end=s.index('\ndef reviewed_candidate(req_text):', start)
-          old=s[start:end]
-          new=r'''def _parse_supervisor_json(raw):
-    """Parse reviewer output defensively; tolerate fences and safely salvage truncation."""
-    raw=(raw or '').strip()
-    raw=re.sub(r"^```(?:json)?\s*|\s*```$",'',raw.strip())
-    try:
-        return json.loads(raw)
-    except Exception:
-        action=re.search(r'"action"\s*:\s*"(approve|fix)"',raw,re.I)
-        feedback=re.search(r'"feedback"\s*:\s*"((?:\\.|[^"\\])*)',raw,re.I|re.S)
-        if not action:
-            raise
-        fb=feedback.group(1) if feedback else ''
-        try:
-            fb=json.loads('"'+fb+'"') if fb else ''
-        except Exception:
-            fb=fb.replace('\\"','"').replace('\\n','\n')
-        return {'action':action.group(1).lower(),'feedback':fb}
-
-def supervisor_review(req_text,current,candidate,attempt):
-    """Review proposed code with bounded recovery for empty/malformed/truncated JSON."""
-    targets=improvement_targets(req_text,candidate)
-    selected="\n\n".join(f"【{name}】\n{body}" for name,body in targets.items())
-    instruction="""あなたは航海士ナミの上位コードレビューAI。要求と候補コードを厳格に照合する。
-既存機能・個人/グループ/会社記憶の分離・owner guard・承認前マージ禁止を壊さないこと。
-秘密情報を要求/出力しない。問題がなければapprove。問題があればfixと具体的な修正指示を返す。
-JSONのみ: {\"action\":\"approve|fix\",\"feedback\":\"具体的な理由と修正指示\"}。
-必ずJSONを最後まで閉じて返す。"""
-    text=f"【要求】\n{req_text}\n【レビュー試行】{attempt}/3\n【候補コード（関連関数のみ）】\n{selected}"
-    last_error=''
-    for retry in range(1,4):
-        payload={"model":MODEL,"instructions":instruction+("\n前回はJSONが壊れていた。短く完全なJSONを返すこと。" if last_error else ""),"input":[{"role":"user","content":[{"type":"input_text","text":text}]}],"max_output_tokens":900}
-        try:
-            r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)
-            if not r.ok:
-                last_error=f"HTTP {r.status_code}"
-                if r.status_code not in (408,429,500,502,503,504): break
-                continue
-            d=r.json(); out=d.get("output_text","")
-            if not out:
-                xs=[]
-                for item in d.get("output",[]):
-                    if item.get("type")=="message":
-                        for z in item.get("content",[]):
-                            if z.get("type")=="output_text": xs.append(z.get("text",""))
-                out="\n".join(xs)
-            if not out.strip():
-                last_error='empty reviewer output'; continue
-            try:data=_parse_supervisor_json(out)
-            except Exception as x:
-                last_error=f"invalid reviewer JSON: {x}"; continue
-            action=str(data.get("action","")).lower()
-            if action not in ("approve","fix"):
-                last_error='invalid reviewer action'; continue
-            return action,str(data.get("feedback","")).strip()[:4000]
-        except Exception as x:
-            last_error=repr(x)
-    raise RuntimeError("上位AIレビューJSONを3回以内に正常化できなかった: "+last_error[:500])
-'''
-          if old.count('def supervisor_review') != 1:
-              raise SystemExit('target function not found exactly once')
-          p.write_text(s[:start]+new+s[end:])
-          print('patched supervisor_review')
+          s = Path('nami_supervisor.py').read_text()
+          assert 'def parse_reviewer_json' in s
+          assert 'json.loads' in s
+          assert 'REVIEW_ACTIONS' in s
+          assert 'memory_scope' in s
+          print('safety invariants passed')
           PY
-
-      - name: Syntax check
-        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
-        run: python -m py_compile app.py
-
-      - name: Parser regression tests
-        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
-        run: |
-          python - <<'PY'
-          import ast, json, re
-          from pathlib import Path
-          src=Path('app.py').read_text()
-          tree=ast.parse(src)
-          node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_parse_supervisor_json')
-          ns={'json':json,'re':re}
-          exec(compile(ast.Module(body=[node],type_ignores=[]),'<parser>','exec'),ns)
-          parse=ns['_parse_supervisor_json']
-          assert parse('{"action":"approve","feedback":"ok"}')['action']=='approve'
-          assert parse('```json\n{"action":"fix","feedback":"直して"}\n```')['action']=='fix'
-          assert parse('{"action":"approve","feedback":"途中で切れた')['action']=='approve'
-          assert parse('{"action":"fix","feedback":"A\\nB')['feedback']=='A\nB'
-          try:
-              parse('{"action":"unknown","feedback":"x"}')
-              raise AssertionError('invalid action must not be salvaged')
-          except Exception:
-              pass
-          print('parser regression tests passed')
-          PY
-
-      - name: Safety assertions
-        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          s=Path('app.py').read_text()
-          start=s.index('def supervisor_review(req_text,current,candidate,attempt):')
-          end=s.index('\ndef reviewed_candidate(req_text):', start)
-          f=s[start:end]
-          assert 'for retry in range(1,4)' in f
-          assert 'max_output_tokens' in f
-          assert 'timeout=120' in f
-          assert 'action not in ("approve","fix")' in f
-          assert 'merge' not in f.lower()
-          print('safety assertions passed')
-          PY
-
-      - name: Commit patch
-        if: ${{ startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') == false }}
-        run: |
-          git config user.name 'nami-review-guard'
-          git config user.email 'nami-review-guard@users.noreply.github.com'
-          git add app.py
-          git diff --cached --quiet || git commit -m 'chore: patch reviewer JSON resilience'
-          git push
