@@ -1,0 +1,46 @@
+name: Apply improvement regex hotfix
+on:
+  push:
+    branches: [chapi/hotfix-improvement-regex]
+    paths:
+      - 'scripts/hotfix_improvement_regex.py'
+      - '.github/workflows/apply-improvement-regex-hotfix.yml'
+jobs:
+  hotfix:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi/hotfix-improvement-regex
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply regex fix
+        run: python scripts/hotfix_improvement_regex.py
+      - name: Compile and regression check
+        run: |
+          python -m py_compile app.py
+          python - <<'PY'
+          import ast, re
+          src=open('app.py',encoding='utf-8').read()
+          ast.parse(src)
+          m=re.search(r'def improvement_intent\(text\):(.+?)\ndef ', src, re.S)
+          assert m, 'improvement_intent missing'
+          block=m.group(1)
+          # Extract/compile the exact concatenated raw regex literals from the function.
+          tree=ast.parse('x='+block.split('return bool(re.search(',1)[1].rsplit(',\n        text or',1)[0].strip())
+          pattern=ast.literal_eval(tree.body[0].value)
+          re.compile(pattern, re.I)
+          assert re.search(pattern, 'いい感じに改善しといて', re.I)
+          print('regex compiles and improvement request matches')
+          PY
+      - name: Commit hotfix to branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix improvement intent regex runtime crash'
+          git push
