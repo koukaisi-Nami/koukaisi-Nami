@@ -1,0 +1,31 @@
+name: Apply media patch
+on:
+  push:
+    branches: [chapi-api-cost-optimize]
+    paths: [patch_media.py]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-api-cost-optimize
+      - name: Apply patch
+        run: python patch_media.py
+      - name: Validate syntax and required features
+        run: |
+          python -m py_compile app.py
+          grep -q 'typ not in ("text","image","file")' app.py
+          grep -q 'def media_ai' app.py
+          grep -q 'input_file' app.py
+          grep -q 'needs_web=' app.py
+      - name: Commit app only
+        run: |
+          git config user.name 'Chapi'
+          git config user.email 'actions@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'Add image PDF reading and reduce unnecessary API tools'
+          git push origin HEAD:chapi-api-cost-optimize
