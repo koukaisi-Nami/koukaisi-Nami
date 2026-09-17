@@ -16,13 +16,16 @@ jobs:
       - name: Apply runtime patch
         run: python scripts/patch_frontier_runtime.py
       - name: Compile runtime and frontier modules
-        run: python -m py_compile app.py nami_frontier.py nami_model_policy.py nami_router.py nami_evolution.py nami_health.py
+        run: >-
+          python -m py_compile app.py nami_frontier.py nami_openai_media.py
+          nami_model_policy.py nami_router.py nami_evolution.py nami_health.py
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
       - name: Run frontier and Nami 3.0 deterministic tests
         run: >-
           python -m pytest -q
           tests/test_nami_frontier.py
+          tests/test_nami_openai_media.py
           tests/test_nami_model_policy.py
           tests/test_nami_context_budget.py
           tests/test_nami_router.py
@@ -40,10 +43,14 @@ jobs:
           s=Path('app.py').read_text()
           ast.parse(s)
           assert 'from nami_frontier import model_for_task, reasoning_for_task, task_for_text' in s
+          assert 'from nami_openai_media import wants_image_generation, image_prompt, generate_image' in s
           assert 'runtime_model=model_for_task(runtime_task,OPENAI_KEY,HTTP)' in s
           assert 'model_for_task("self_improvement",OPENAI_KEY,HTTP)' in s
           assert 'model_for_task("code_review",OPENAI_KEY,HTTP)' in s
           assert 'model_for_task("document",OPENAI_KEY,HTTP)' in s
+          assert 'OPENAI_VECTOR_STORE_ID' in s
+          assert 'def start_frontier_image_generation(' in s
+          assert 'wants_image_generation(text)' in s
           assert 'CREATE TABLE IF NOT EXISTS memories' in s
           assert 'awaiting and can_self_improve(uid)' in s
           print('frontier runtime invariants OK')
@@ -57,5 +64,5 @@ jobs:
           git config user.name "nami-frontier-bot"
           git config user.email "nami-frontier-bot@users.noreply.github.com"
           git add app.py
-          git commit -m "Wire latest frontier model routing into runtime"
+          git commit -m "Wire frontier media and model routing into runtime"
           git push
