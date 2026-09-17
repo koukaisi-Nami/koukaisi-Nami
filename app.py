@@ -6,6 +6,7 @@ from intent_router import should_create_reminder, reminder_has_enough_context, r
 from flask import Flask, request, abort, Response, render_template_string, send_file
 from estimate_document import make_estimate_document, make_estimate_image
 from structured_estimate_runtime import generate_text as structured_estimate
+from owner_guard import can_self_improve
 
 app = Flask(__name__)
 SECRET=os.getenv("LINE_CHANNEL_SECRET","")
@@ -1309,7 +1310,7 @@ def webhook():
                 _,pdf_kind,pdf_data=quick_doc;make_pdf(pdf_kind,pdf_data)
                 ans=pdf_kind+'の内容を作成したよ🧭\n'+pdf_data.get('description','')
             else:ans=quick_doc
-        elif awaiting and re.search(r"^(ナミ[、, ]*)?(反映して|承認|OK|おけ|やって)$",text.strip(),re.I):
+        elif awaiting and can_self_improve(uid) and re.search(r"^(ナミ[、, ]*)?(反映して|承認|OK|おけ|やって)$",text.strip(),re.I):
             try:
                 ok,msg=merge_pr(awaiting[2])
                 if ok:set_improvement_status(awaiting[0],"merged")
@@ -1317,7 +1318,7 @@ def webhook():
             except Exception as x:
                 print("merge_pr",repr(x),flush=True)
                 ans="反映処理でエラー。既存本番は変更していないよ。"
-        elif improvement_intent(text):
+        elif improvement_intent(text) and can_self_improve(uid):
             plan=improvement_plan(text,uid,cid)
             rid=add_improvement(cid,uid,text,plan)
             if github_ready():
