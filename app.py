@@ -262,12 +262,25 @@ def gh_headers():
             "X-GitHub-Api-Version":"2022-11-28"}
 
 def gh(method,path,**kwargs):
-    return requests.request(method,f"https://api.github.com/repos/{GITHUB_REPO}{path}",
-                            headers=gh_headers(),timeout=45,**kwargs)
+    r=requests.request(method,f"https://api.github.com/repos/{GITHUB_REPO}{path}",
+                       headers=gh_headers(),timeout=45,**kwargs)
+    if not r.ok:
+        request_id=r.headers.get("x-github-request-id","")
+        print("GITHUB_ERROR", {"method":method,"path":path,"status":r.status_code,
+              "request_id":request_id,"body":r.text[:2000]}, flush=True)
+    return r
+
+def gh_fail(label,r):
+    request_id=r.headers.get("x-github-request-id","")
+    try:
+        d=r.json(); detail=d.get("message") or r.text[:500]
+    except Exception:
+        detail=r.text[:500]
+    raise RuntimeError(f"{label}: GitHub {r.status_code} {detail} request_id={request_id}")
 
 def repo_file(path=GITHUB_APP_PATH,ref=None):
     r=gh("GET",f"/contents/{path}",params={"ref":ref or GITHUB_BRANCH})
-    if not r.ok: raise RuntimeError(f"GitHub read failed {r.status_code}")
+    if not r.ok: gh_fail("GitHub read failed",r)
     d=r.json()
     return base64.b64decode(d["content"]).decode(),d["sha"]
 
@@ -358,19 +371,19 @@ def create_pr(req_text):
     if errors:return None,"安全チェック停止:\n- "+"\n- ".join(errors[:15])
     current,base_sha=repo_file()
     ref=gh("GET",f"/git/ref/heads/{GITHUB_BRANCH}")
-    if not ref.ok: raise RuntimeError("base branch read failed")
+    if not ref.ok: gh_fail("base branch read failed",ref)
     branch=f"nami/improve-{int(time.time())}"
     r=gh("POST","/git/refs",json={"ref":f"refs/heads/{branch}","sha":ref.json()["object"]["sha"]})
-    if not r.ok: raise RuntimeError("branch create failed")
+    if not r.ok: gh_fail("branch create failed",r)
     r=gh("PUT",f"/contents/{GITHUB_APP_PATH}",json={
       "message":"Nami approved improvement candidate",
       "content":base64.b64encode(candidate.encode()).decode(),
       "sha":base_sha,"branch":branch})
-    if not r.ok: raise RuntimeError("candidate commit failed")
+    if not r.ok: gh_fail("candidate commit failed",r)
     r=gh("POST","/pulls",json={"title":"航海士ナミ 自己改善",
       "head":branch,"base":GITHUB_BRANCH,
       "body":"LINEから作成した改善候補。必須機能ガード済み。船長のLINE承認後のみマージ。"})
-    if not r.ok: raise RuntimeError("PR create failed")
+    if not r.ok: gh_fail("PR create failed",r)
     d=r.json()
     return (d["number"],d["html_url"]),None
 
@@ -394,14 +407,18 @@ def latest_awaiting(cid,uid):
 def merge_pr(num):
     # Re-read candidate and run guards again immediately before merge.
     pr=gh("GET",f"/pulls/{num}")
-    if not pr.ok:return False,"PRを取得できなかった"
+    if not pr.ok:
+        print("GITHUB_MERGE_READ_ERROR",pr.status_code,pr.text[:2000],flush=True)
+        return False,f"PRを取得できなかった (GitHub {pr.status_code})"
     head=pr.json()["head"]["ref"]
     candidate,_=repo_file(GITHUB_APP_PATH,head)
     errors=validate_candidate(candidate)
     if errors:return False,"反映直前チェックで停止:\n- "+"\n- ".join(errors[:15])
     r=gh("PUT",f"/pulls/{num}/merge",json={"merge_method":"squash",
       "commit_title":f"航海士ナミ 自己改善 #{num}"})
-    if not r.ok:return False,"GitHubマージに失敗。現行本番は維持したよ。"
+    if not r.ok:
+        print("GITHUB_MERGE_ERROR",r.status_code,r.text[:2000],flush=True)
+        return False,f"GitHubマージに失敗 (GitHub {r.status_code})。現行本番は維持したよ。"
     return True,"反映したよ🧭 RenderのAuto-DeployがONなら自動デプロイが始まる。"
 
 
