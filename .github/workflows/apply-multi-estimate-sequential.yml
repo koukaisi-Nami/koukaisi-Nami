@@ -1,0 +1,41 @@
+name: Apply multi estimate sequential fix
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/apply-multi-estimate-sequential.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch app.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text()
+          old='''def batch_estimates_using_single(groups,user_instruction,uid,cid):\n    \"\"\"Run the same single-property estimate prompt once per property.\"\"\"\n    answers=[]\n    for g in groups:\n        p=g['property']\n        analyses='\\n---\\n'.join(a.get('analysis','') for a in g['attachments'])\n        material=f\"物件名：{p.get('name','')}\\n号室：{p.get('room','')}\\n住所：{p.get('address','')}\\n【募集図面の読取結果】\\n{analyses}\"\n        answers.append(ai(single_estimate_prompt(user_instruction)+\"\\n\\n\"+material,uid,cid))\n    return answers\n'''
+          new='''def batch_estimates_using_single(groups,user_instruction,uid,cid):\n    \"\"\"Generate each property independently with the exact single-property flow.\"\"\"\n    answers=[]\n    total=len(groups)\n    for index,g in enumerate(groups,1):\n        p=g['property']\n        analyses='\\n---\\n'.join(a.get('analysis','') for a in g['attachments'])\n        material=f\"物件名：{p.get('name','')}\\n号室：{p.get('room','')}\\n住所：{p.get('address','')}\\n【募集図面の読取結果】\\n{analyses}\"\n        instruction=(user_instruction or '')+f\"\\nこれは全{total}件中{index}件目。ほかの物件と混ぜず、この1物件だけを単独見積もりとして計算・出力すること。\"\n        estimate=ai(single_estimate_prompt(instruction)+\"\\n\\n\"+material,uid,cid)\n        label=p.get('name') or p.get('address') or f'{index}件目'\n        room=p.get('room') or ''\n        header=f\"【{index}/{total} {label}{(' '+room) if room else ''}】\"\n        answers.append(header+\"\\n\"+estimate)\n    return answers\n'''
+          if old not in s:
+              raise SystemExit('target batch function not found')
+          s=s.replace(old,new,1)
+          old2='''        saved_ans=\"\\n\\n\".join(ans) if isinstance(ans,(list,tuple)) else ans\n        save_msg(\"assistant:\"+eid,cid,\"bot\",\"航海士ナミ\",\"assistant\",saved_ans)\n        reply(e.get(\"replyToken\"),ans)\n'''
+          new2='''        saved_ans=\"\\n\\n\".join(ans) if isinstance(ans,(list,tuple)) else ans\n        save_msg(\"assistant:\"+eid,cid,\"bot\",\"航海士ナミ\",\"assistant\",saved_ans)\n        if isinstance(ans,list):\n            # LINE reply is capped at 5 messages. Reply with the first batch, then push the rest one by one.\n            first=ans[:5]\n            reply(e.get(\"replyToken\"),first)\n            target=line_target(e)\n            for item in ans[5:]:\n                push_line(target,item)\n        else:\n            reply(e.get(\"replyToken\"),ans)\n'''
+          if old2 not in s:
+              raise SystemExit('target reply block not found')
+          s=s.replace(old2,new2,1)
+          p.write_text(s)
+          PY
+      - name: Syntax check
+        run: python -m py_compile app.py
+      - name: Commit fix
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Make multi-property estimates sequential and isolated"
+          git push
