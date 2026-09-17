@@ -13,8 +13,19 @@ jobs:
       - run: python tools/apply_owner_guard.py
       - run: python -m py_compile app.py owner_guard.py
       - run: python -m unittest tests.test_owner_guard
-      - name: Ensure migration produces guarded app
+      - name: Ensure current runtime is owner guarded
         run: |
-          grep -q 'from owner_guard import can_self_improve' app.py
-          grep -q 'improvement_intent(text) and can_self_improve(uid)' app.py
-          grep -q 'awaiting and can_self_improve(uid)' app.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('app.py').read_text()
+          required=(
+              'from owner_guard import can_self_improve',
+              "semantic_intent_route(text,uid,cid) if can_self_improve(uid) else 'chat'",
+              'awaiting and can_self_improve(uid)',
+              'elif owner_self_improve:',
+          )
+          missing=[x for x in required if x not in s]
+          if missing:
+              raise SystemExit('owner guard runtime markers missing: '+repr(missing))
+          print('owner guard runtime markers OK')
+          PY
