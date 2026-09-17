@@ -1,0 +1,27 @@
+name: Apply single estimate insurance fix
+on:
+  push:
+    branches: [chapi-single-insurance-fix-0917]
+    paths: [patch_single_estimate_insurance.py]
+  workflow_dispatch:
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chapi-single-insurance-fix-0917
+      - run: python patch_single_estimate_insurance.py
+      - run: python -m py_compile app.py
+      - run: |
+          grep -q '損保、損害保険、家財保険' app.py
+          grep -q '火災保険（仮）：20,000円' app.py
+          grep -q '初回保証料（仮）' app.py
+      - run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py
+          git commit -m 'Fix single estimate insurance aliases and fallback'
+          git push
