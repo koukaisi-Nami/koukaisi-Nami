@@ -10,3 +10,4 @@ new2='''賃貸募集図面なら物件名、号室、所在地、交通、間取
 if old2 not in s: raise SystemExit('analyze extraction rule not found')
 s=s.replace(old2,new2,1)
 p.write_text(s)
+# workflow trigger
