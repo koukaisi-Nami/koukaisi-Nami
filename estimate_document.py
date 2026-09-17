@@ -6,6 +6,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from estimate_model import normalize_estimate
 
 FONT='HeiseiKakuGo-W5'
 pdfmetrics.registerFont(UnicodeCIDFont(FONT))
@@ -45,39 +46,50 @@ def item_detail(label,value):
         return m.group(1) if m else '日割り賃料'
     return '概算' if '（仮）' in label or '仮' in value else ''
 
-def discount_detail(label,value,amount):
-    condition=''
-    if '半額' in label+value: condition='・半額'
-    elif '無料' in label+value: condition='・無料'
-    return (('割引額 '+f'{amount:,}円') if amount is not None else '割引額')+condition
+def _document_data(payload):
+    if not isinstance(payload,dict):
+        d=parse_customer_estimate(payload)
+        rows=[{'label':a,'amount':c,'breakdown':item_detail(a,b),'discount_amount':0,'original_amount':None} for a,b,c in d['items']]
+        for a,b,c in d['discounts']:
+            rows.append({'label':a,'amount':None,'breakdown':b,'discount_amount':c or 0,'original_amount':None,'legacy_discount':True})
+        return {'property':d['property'],'move_in':d['move_in'],'items':rows,'total':d['total'],'notes':d['notes'],'total_complete':d['total'] is not None}
+    return normalize_estimate(payload)
 
-def make_estimate_document(text):
-    d=parse_customer_estimate(text); out=BytesIO(); c=canvas.Canvas(out,pagesize=A4); w,h=A4
+def _detail(row):
+    bits=[]
+    if row.get('breakdown'): bits.append(row['breakdown'])
+    discount=row.get('discount_amount') or 0
+    if discount:
+        bits.append(f'割引額 {discount:,}円')
+    return ' / '.join(bits) or ('要確認' if row.get('amount') is None else '')
+
+def make_estimate_document(payload):
+    d=_document_data(payload); out=BytesIO(); c=canvas.Canvas(out,pagesize=A4); w,h=A4
     navy=(0.035,0.12,0.20); red=(0.78,0.08,0.08)
     c.setTitle('見積もり概算書'); c.setStrokeColorRGB(*navy); c.setLineWidth(1.4); c.line(12*mm,h-12*mm,w-12*mm,h-12*mm)
     c.setFillColorRGB(*navy); c.setFont(FONT,26); c.drawCentredString(w/2,h-31*mm,'見 積 も り 概 算 書'); c.setFont(FONT,8); c.drawRightString(w-14*mm,h-27*mm,'ESTIMATE'); c.line(12*mm,h-39*mm,w-12*mm,h-39*mm)
     y=h-55*mm; c.setFillColorRGB(*navy); c.rect(14*mm,y-8*mm,30*mm,11*mm,fill=1,stroke=0); c.setFillColorRGB(1,1,1); c.setFont(FONT,10); c.drawCentredString(29*mm,y-4*mm,'物件名')
     c.setFillColorRGB(0,0,0); c.setFont(FONT,14); c.drawString(50*mm,y-4*mm,d['property'][:35]); c.setFont(FONT,8); c.drawRightString(w-14*mm,y-4*mm,datetime.now().strftime('発行日 %Y/%m/%d'))
-    if d['move_in']:
+    if d.get('move_in'):
         c.setFillColorRGB(*navy); c.setFont(FONT,10); c.drawString(50*mm,y-10*mm,'入居日：'+d['move_in'][:24])
-    top=y-(22*mm if d['move_in'] else 18*mm); left=14*mm; right=w-14*mm; col1=72*mm; col2=132*mm; rowh=10*mm
+    top=y-(22*mm if d.get('move_in') else 18*mm); left=14*mm; right=w-14*mm; col1=72*mm; col2=132*mm; rowh=10*mm
     c.setFillColorRGB(*navy); c.rect(left,top-rowh,right-left,rowh,fill=1,stroke=0); c.setFillColorRGB(1,1,1); c.setFont(FONT,10)
     c.drawCentredString((left+col1)/2,top-7*mm,'項目'); c.drawCentredString((col1+col2)/2,top-7*mm,'内訳'); c.drawCentredString((col2+right)/2,top-7*mm,'金額（税込）')
-    c.setStrokeColorRGB(.55,.58,.62); yy=top-rowh
-    rows=[x for x in d['items'] if x[1] != '－']
-    for label,value,amount in rows[:15]:
-        c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh); c.setFillColorRGB(0,0,0); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,8); c.drawString(col1+4*mm,yy-6.8*mm,item_detail(label,value)[:24]); c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,(f'{amount:,} 円' if amount is not None else value[:22])); yy-=rowh
-    if d['discounts']:
-        yy-=3*mm; c.setFillColorRGB(*red); c.setFont(FONT,11); c.drawString(left,yy,'割引・特典'); yy-=5*mm
-        for label,value,amount in d['discounts'][:5]:
-            c.setStrokeColorRGB(*red); c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh); c.setFillColorRGB(*red); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,8); c.drawString(col1+4*mm,yy-6.8*mm,discount_detail(label,value,amount)[:24]); c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,(f'▲ {amount:,} 円' if amount is not None else value[:22])); yy-=rowh
-    yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'お支払い概算合計'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('要確認' if d['total'] is None else f"{d['total']:,} 円"))
+    yy=top-rowh
+    for row in d.get('items',[])[:15]:
+        discounted=bool(row.get('discount_amount'))
+        c.setStrokeColorRGB(*(red if discounted else (.55,.58,.62))); c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh)
+        c.setFillColorRGB(*(red if discounted else (0,0,0))); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,row.get('label','要確認')[:20]); c.setFont(FONT,7.5); c.drawString(col1+3*mm,yy-6.8*mm,_detail(row)[:28])
+        amount=row.get('amount'); value='要確認' if amount is None else f'{amount:,} 円'; c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,value); yy-=rowh
+    yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'お支払い概算合計'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('要確認' if d.get('total') is None else f"{d['total']:,} 円"))
     ny=yy-30*mm; c.setFillColorRGB(0,0,0); c.setFont(FONT,8)
-    for n in (d['notes'] or ['※ 本書は概算の見積もりです。入居日・未確定項目により金額が変動します。'])[:4]: c.drawString(left,ny,n[:85]); ny-=5*mm
+    notes=d.get('notes') or ['※ 本書は概算の見積もりです。入居日・未確定項目により金額が変動します。']
+    if not d.get('total_complete',True): notes=['※ 未確定項目があるため、確定時に合計が変動します。']+notes
+    for n in notes[:4]: c.drawString(left,ny,n[:85]); ny-=5*mm
     c.setFont(FONT,8); c.drawRightString(right,14*mm,'Steer Ship株式会社'); c.showPage(); c.save(); out.seek(0); return out
 
-def make_estimate_image(text):
+def make_estimate_image(payload):
     import fitz
-    pdf=fitz.open(stream=make_estimate_document(text).getvalue(),filetype='pdf')
+    pdf=fitz.open(stream=make_estimate_document(payload).getvalue(),filetype='pdf')
     pix=pdf[0].get_pixmap(matrix=fitz.Matrix(3,3),alpha=False)
     return BytesIO(pix.tobytes('png'))
