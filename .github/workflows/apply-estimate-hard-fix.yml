@@ -1,0 +1,27 @@
+name: Apply estimate hard fix
+on:
+  push:
+    branches: [chapi-estimate-hard-fix]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python patch_estimate_hard_fix.py
+      - run: python -m py_compile app.py
+      - run: |
+          grep -q '顧客向け見積回答ルール・最優先' app.py
+          grep -q '今回指定がなければ、図面・保存済み会社ルール・過去見積に金額があっても必ず「－」' app.py
+          grep -q '物件詳細解析やMarkdown表を返さず' app.py
+          grep -q '※入居日・未確定項目により金額が変動します。' app.py
+      - name: Commit app integration
+        run: |
+          git config user.name Chapi
+          git config user.email actions@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Enforce customer-ready estimate output everywhere'
+          git push
