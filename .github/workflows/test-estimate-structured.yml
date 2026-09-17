@@ -1,0 +1,32 @@
+name: Test structured estimates
+on:
+  pull_request:
+    paths:
+      - 'estimate_model.py'
+      - 'estimate_document.py'
+      - 'tests/test_estimate_model.py'
+      - 'tests/test_estimate_renderer.py'
+      - '.github/workflows/test-estimate-structured.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install renderer dependencies
+        run: pip install reportlab pymupdf
+      - name: Syntax check
+        run: python -m py_compile estimate_model.py estimate_document.py tests/test_estimate_model.py tests/test_estimate_renderer.py
+      - name: Unit tests
+        run: python -m unittest tests.test_estimate_model tests.test_estimate_renderer -v
+      - name: PNG and PDF smoke test
+        run: |
+          python - <<'PY'
+          from estimate_document import make_estimate_document, make_estimate_image
+          sample={'property':'TEST 101','move_in':'15日','items':[{'label':'当月前家賃','amount':50000,'breakdown':'日割り16日分'},{'label':'仲介手数料','original_amount':110000,'discount_amount':55000,'amount':55000,'breakdown':'半額'}]}
+          assert len(make_estimate_document(sample).getvalue()) > 1000
+          assert len(make_estimate_image(sample).getvalue()) > 1000
+          PY
