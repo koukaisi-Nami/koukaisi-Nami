@@ -1,31 +1,23 @@
-name: Apply three documents
+name: Validate three documents
 on:
   push:
     branches: [chapi-three-documents]
-    paths: [patch_three_documents.py, three_documents_trigger.txt]
+    paths: [app.py, document_templates.py, three_documents_trigger.txt, .github/workflows/apply-three-documents.yml]
 permissions:
-  contents: write
+  contents: read
 jobs:
-  patch:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: chapi-three-documents
-      - run: python patch_three_documents.py
-      - name: Validate
+      - name: Validate syntax and integration
         run: |
           python -m py_compile app.py document_templates.py
           grep -q 'def three_document_command' app.py
+          grep -q '__ESTIMATE_IMAGE__' app.py
           grep -q 'AD請求書' app.py
           grep -q '仲介手数料精算書' app.py
           grep -q '見積り書' app.py
           grep -q 'quoted_blob,quoted_mime=content(qid)' app.py
-      - name: Commit
-        run: |
-          git config user.name 'Chapi'
-          git config user.email 'actions@users.noreply.github.com'
-          git add app.py
-          git diff --cached --quiet && exit 0
-          git commit -m 'Connect LINE to three standard documents'
-          git push origin HEAD:chapi-three-documents
