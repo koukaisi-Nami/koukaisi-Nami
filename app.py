@@ -681,9 +681,14 @@ def merge_pr(num):
 
 def improvement_intent(text):
     # Explicit owner development instructions must never fall through to memory/chat.
+    # Review-loop and approval-related requests are also routed to the improvement flow.
     return bool(re.search(
         r"(機能改善|改善して|直して|修正して|機能追加|できるようにして|アップデートして|改修して|"
-        r"コード.{0,24}(?:変更|修正|直|書き換)|(?:実装|追加)して|PR.{0,24}(?:作|作成))",
+        r"コード.{0,24}(?:変更|修正|直|書き換)|(?:実装|追加)して|"
+        r"PR.{0,24}(?:作|作成|レビュー)|"
+        r"(?:上位AI|自動).{0,16}(?:レビュー|確認)|"
+        r"レビュー.{0,16}(?:して|させて)|"
+        r"(?:反映|マージ|デプロイ).{0,16}(?:していい|してよい|して)",
         text or "", re.I))
 
 def improvement_plan(text,uid,cid):
@@ -791,7 +796,16 @@ def ctx(uid,cid,query="",extra=""):
     h="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x[:700]}" for r,n,x in history(cid))
     m="\n".join(f"- [{s}/{cat}/{sub}] {x[:700]}" for s,cat,sub,x in mems(uid,cid,query))
     sk="\n".join(f"- 【{n}】{x[:900]}" for n,x in skill_rows(query))
-    return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{extra}"
+    safety=(
+        "【コード改善PRの安全手順】\n"
+        "コード改善PRを作成する場合は、作成後に上位AIによる自動レビューを実施する。"
+        "問題があれば修正して再テストし、問題がなくなるまで最大3回まで繰り返す。"
+        "テストがすべて成功しても、mainへのマージや本番反映は行わず、最後にユーザーへ"
+        "『反映していい？』と確認する。ユーザーが明示的に『反映して』と言うまで、"
+        "マージ・デプロイ・本番反映を絶対に実行しない。既存機能、記憶、DBデータは保持し、"
+        "秘密情報をコードへ埋め込まず、DB変更は後方互換なALTER/CREATE IF NOT EXISTSのみ使用する。"
+    )
+    return f"【トーク履歴】\n{h or 'なし'}\n【長期記憶】\n{m or 'なし'}\n【会社ルール】\n{sk or 'なし'}\n{safety}\n{extra}"
 
 def format_retry(text):
     m=re.search(r"try again in\s+([0-9]+)m(?:([0-9.]+)s)?",text or "",re.I)
