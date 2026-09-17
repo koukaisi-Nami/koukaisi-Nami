@@ -867,13 +867,19 @@ def single_estimate_prompt(user_instruction=""):
             "【今回のユーザー指定】"+(user_instruction or "なし"))
 
 def batch_estimates_using_single(groups,user_instruction,uid,cid):
-    """Run the same single-property estimate prompt once per property."""
+    """Generate each property independently with the exact single-property flow."""
     answers=[]
-    for g in groups:
+    total=len(groups)
+    for index,g in enumerate(groups,1):
         p=g['property']
         analyses='\n---\n'.join(a.get('analysis','') for a in g['attachments'])
         material=f"物件名：{p.get('name','')}\n号室：{p.get('room','')}\n住所：{p.get('address','')}\n【募集図面の読取結果】\n{analyses}"
-        answers.append(ai(single_estimate_prompt(user_instruction)+"\n\n"+material,uid,cid))
+        instruction=(user_instruction or '')+f"\nこれは全{total}件中{index}件目。ほかの物件と混ぜず、この1物件だけを単独見積もりとして計算・出力すること。"
+        estimate=ai(single_estimate_prompt(instruction)+"\n\n"+material,uid,cid)
+        label=p.get('name') or p.get('address') or f'{index}件目'
+        room=p.get('room') or ''
+        header=f"【{index}/{total} {label}{(' '+room) if room else ''}】"
+        answers.append(header+"\n"+estimate)
     return answers
 
 def three_document_command(text,uid,cid,qid=None):
@@ -1217,7 +1223,15 @@ def webhook():
 
         saved_ans="\n\n".join(ans) if isinstance(ans,(list,tuple)) else ans
         save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",saved_ans)
-        reply(e.get("replyToken"),ans)
+        if isinstance(ans,list):
+            # LINE reply is capped at 5 messages. Reply with the first batch, then push the rest one by one.
+            first=ans[:5]
+            reply(e.get("replyToken"),first)
+            target=line_target(e)
+            for item in ans[5:]:
+                push_line(target,item)
+        else:
+            reply(e.get("replyToken"),ans)
     return "OK",200
 
 try:
