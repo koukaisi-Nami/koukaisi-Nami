@@ -16,7 +16,14 @@ jobs:
       - run: |
           grep -q 'if grouped(e) and not called(m):' app.py
           grep -q 'Group safety: Nami is silent unless explicitly called/mentioned' app.py
-          ! grep -A4 'if grouped(e) and not called(m):' app.py | grep -q 'manager_review'
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('app.py').read_text()
+          marker='if grouped(e) and not called(m):'
+          block=s[s.index(marker):s.index(marker)+180]
+          assert 'manager_review' not in block
+          assert 'continue' in block
+          PY
       - name: Commit app integration
         run: |
           git config user.name Chapi
