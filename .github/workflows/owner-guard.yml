@@ -1,0 +1,22 @@
+name: Owner guard tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test-owner-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest tests.test_owner_guard
+      - name: Verify app integrates owner guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('app.py').read_text()
+          assert 'from owner_guard import can_self_improve' in src, 'app.py must import owner guard'
+          assert 'can_self_improve(uid)' in src, 'app.py must gate self-improvement by LINE user ID'
+          PY
