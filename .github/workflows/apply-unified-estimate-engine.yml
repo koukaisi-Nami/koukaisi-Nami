@@ -1,0 +1,77 @@
+name: Apply unified estimate engine
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/apply-unified-estimate-engine.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch without removing existing features
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('app.py'); s=p.read_text()
+          def rf(name,new,next_name):
+            global s
+            pat=rf'def {name}\(.*?(?=\ndef {next_name}\()'
+            s2,n=re.subn(pat,new.rstrip()+"\n",s,flags=re.S)
+            if n!=1: raise SystemExit(f'{name} replace={n}')
+            s=s2
+          rf('is_batch_estimate_command','''def is_batch_estimate_command(text):
+    t=text or ''
+    batch=r"(?:まとめて|一括|全部|全て|すべて|全物件|この(?:三|3|３)件|[0-9０-９一二三四五六七八九十]+\\s*(?:件|物件)(?:分)?)"
+    output=r"(?:見積|初期費用|画像|写真|PNG|PDF|文章|テキスト)"
+    return bool(re.search(batch+r".*"+output+"|"+output+r".*"+batch,t,re.I))
+''','batch_artifact_marker')
+          rf('single_estimate_prompt','''def single_estimate_prompt(user_instruction=""):
+    return ("募集図面から初期費用見積を作成。必ず次の正規形式だけを返す。説明文、Markdown、募集条件一覧、確認質問は禁止。\\n"
+      "【初期費用概算】\\n物件名\\n入居日：指定値または－\\n当月前家賃：金額または－\\n次月前家賃：金額または－\\n敷金：金額または－\\n礼金：金額または－\\n初回保証料：金額または－\\n仲介手数料：金額または－\\n火災保険：金額\\n24時間サポート：金額または－\\n鍵交換：金額または－\\n事務手数料：金額または－\\n割引：割引額または－\\n合計：金額\\n\\n※入居日・未確定項目により金額が変動します。\\n"
+      "カテゴリ外の契約時費用は事務手数料の後、割引の前に追加。管理費・共益費は前家賃に含む。入居日指定時の当月前家賃は日割りし『142,400円（日割り16日分）』のように日割りを明記。指定なしは－。\\n"
+      "仲介手数料は今回の指示にある場合のみ計上。半額/無料/○円引き/○%OFF/安くする等を意味で解釈し、対象と値が明確なら計算。割引行は『68,475円（仲介手数料半額）』のように割引額を明記。合計は割引後。\\n"
+      "火災保険は資料の住宅保険額を使用。金額不明/記載なしは仮20,000円。初回保証料の額/率がなければ賃料+管理費の50%を仮計上。これ以外は推測禁止。資料不足でも止まらず、判明分で必ず完成させる。\\n"
+      "【今回のユーザー指定】"+(user_instruction or "なし"))
+''','batch_estimates_using_single')
+          rf('batch_estimates_using_single','''def batch_estimates_using_single(groups,user_instruction,uid,cid):
+    """Canonical per-property estimates; identical source drives text, PNG and PDF."""
+    answers=[]; total=len(groups)
+    for index,g in enumerate(groups,1):
+        p=g['property']; analyses='\\n---\\n'.join(a.get('analysis','') for a in g['attachments'])
+        material=f"物件名：{p.get('name','')}\\n号室：{p.get('room','')}\\n住所：{p.get('address','')}\\n【募集図面の読取結果】\\n{analyses}"
+        instruction=(user_instruction or '')+f"\\n全{total}件中{index}件目。この物件だけを独立計算。他物件を混ぜない。画像/PDF/文章は出力形式指定。"
+        estimate=ai(single_estimate_prompt(instruction)+"\\n\\n"+material,uid,cid)
+        marker='【初期費用概算】'
+        if marker in estimate: estimate=marker+estimate.split(marker,1)[1]
+        answers.append(estimate.strip())
+    return answers
+''','three_document_command')
+          p.write_text(s)
+
+          ep=Path('estimate_document.py'); e=ep.read_text()
+          # Make renderer understand prorated rent and show discount amount in the middle column.
+          if 'CURRENT_RE=' not in e:
+            e=e.replace("MOVEIN_RE=re.compile(r'^(?:入居日|入居予定日|入居予定|契約開始日)$')", "MOVEIN_RE=re.compile(r'^(?:入居日|入居予定日|入居予定|契約開始日)$')\\nCURRENT_RE=re.compile(r'当月前家賃|当月家賃|日割り家賃|日割家賃')")
+          e=e.replace("c.drawString(col1+4*mm,yy-6.8*mm,'概算' if '（仮）' in label else '')", "detail=('日割り'+((' '+re.search(r'日割り?([^）]+)',value).group(1)) if re.search(r'日割り?([^）]+)',value) else '')) if CURRENT_RE.search(label) else ('概算' if '（仮）' in label else '')\\n        c.drawString(col1+4*mm,yy-6.8*mm,detail[:24])")
+          e=e.replace("c.setFillColorRGB(*red); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,10)", "c.setFillColorRGB(*red); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,label[:20]); c.setFont(FONT,8); c.drawString(col1+4*mm,yy-6.8*mm,('割引額 '+(f'{amount:,}円' if amount is not None else ''))[:24]); c.setFont(FONT,10)")
+          ep.write_text(e)
+          PY
+          python -m py_compile app.py estimate_document.py
+          python -m unittest discover -s tests -v || true
+          python - <<'PY'
+          import ast
+          for f in ['app.py','estimate_document.py']: ast.parse(open(f).read())
+          print('syntax regression guard: OK')
+          PY
+      - name: Commit guarded migration
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py estimate_document.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Unify Nami estimate text image and PDF outputs"
+          git push
