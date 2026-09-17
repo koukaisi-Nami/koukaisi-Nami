@@ -88,7 +88,7 @@ def save_msg(eid,cid,uid,name,role,content,mtype="text",mid=None,qid=None):
             with cn.cursor() as c:
                 c.execute("""INSERT INTO messages(event_id,conversation_id,user_id,user_name,role,
                 message_type,content,line_message_id,quoted_message_id)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(event_id) DO NOTHING""",
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                 (eid,cid,uid,name,role,mtype,content,mid,qid))
             cn.commit()
     except Exception as x: print("save_msg",repr(x),flush=True)
@@ -116,7 +116,7 @@ def image_analysis(cid,mid=None):
                 return r[0] if r else None
     except Exception as x: print("image_analysis",repr(x),flush=True); return None
 
-def history(cid,n=70):
+def history(cid,n=25):
     try:
         with db() as cn:
             with cn.cursor() as c:
@@ -146,7 +146,7 @@ def mems(uid,cid):
                 c.execute("""SELECT scope,category,subject,content FROM memories WHERE
                 (scope='user' AND scope_id=%s) OR (scope='conversation' AND scope_id=%s)
                 OR (scope='company' AND scope_id='company')
-                ORDER BY updated_at DESC LIMIT 120""",(uid,cid)); return c.fetchall()
+                ORDER BY updated_at DESC LIMIT 40""",(uid,cid)); return c.fetchall()
     except:return []
 
 def add_skill(name,body,uid):
@@ -162,7 +162,7 @@ def skill_rows():
     try:
         with db() as cn:
             with cn.cursor() as c:
-                c.execute("SELECT name,instructions FROM skills WHERE scope='company' ORDER BY updated_at DESC LIMIT 100")
+                c.execute("SELECT name,instructions FROM skills WHERE scope='company' ORDER BY updated_at DESC LIMIT 30")
                 return c.fetchall()
     except:return []
 
@@ -405,7 +405,12 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
                         json=payload,timeout=120)
         if not r.ok:
-            print("OPENAI",r.status_code,r.text,flush=True); return f"AIエラー({r.status_code})"
+            print("OPENAI",r.status_code,r.text,flush=True)
+            if r.status_code==429:
+                retry=re.search(r"try again in ([0-9.]+[sm][0-9.sm]*)",r.text,re.I)
+                wait=retry.group(1) if retry else "少し"
+                return f"AIが混み合ってるよ🧭 {wait}後にもう一度送って。"
+            return f"AIエラー({r.status_code})"
         d=r.json()
         if d.get("output_text"):return d["output_text"].strip()
         out=[]
