@@ -1,19 +1,10 @@
 from pathlib import Path
+import re
 p=Path('app.py')
 s=p.read_text()
 
-old='''        d=r.json()
-        if d.get("output_text"):return d["output_text"].strip()
-        out=[]
-        for i in d.get("output",[]):
-            if i.get("type")=="message":
-                for z in i.get("content",[]):
-                    if z.get("type")=="output_text":out.append(z.get("text",""))
-        return "\\n".join(out).strip() or "回答を作れなかったよ。"
-'''
-new='''        d=r.json()
-        if d.get("output_text"):return d["output_text"].strip()
-        out=[]
+pattern=r'''        out=\[\]\n        for i in d\.get\("output",\[\]\):\n            if i\.get\("type"\)=="message":\n                for z in i\.get\("content",\[\]\):\n                    if z\.get\("type"\)=="output_text":out\.append\(z\.get\("text",""\)\)\n        return "\\n"\.join\(out\)\.strip\(\) or "回答を作れなかったよ。"'''
+replacement='''        out=[]
         for i in d.get("output",[]):
             if i.get("type")=="message":
                 for z in i.get("content",[]):
@@ -21,8 +12,6 @@ new='''        d=r.json()
                         out.append(z.get("text",""))
         answer="\\n".join(out).strip()
         if answer:return answer
-        # Some models can finish with an incomplete response before emitting text.
-        # Retry once without tools, with more output budget, preserving the image/question.
         status=d.get("status","")
         incomplete=d.get("incomplete_details") or {}
         print("OPENAI_EMPTY",{"status":status,"incomplete":incomplete,"types":[i.get("type") for i in d.get("output",[])]},flush=True)
@@ -41,25 +30,22 @@ new='''        d=r.json()
                 for z in i.get("content",[]):
                     if z.get("type") in ("output_text","text") and z.get("text"):
                         vals.append(z.get("text",""))
-        return "\\n".join(vals).strip() or "資料は受け取れたけど回答生成に失敗したよ。もう一度同じ資料に返信してね。"
-'''
-if old not in s: raise SystemExit('ai target not found')
-s=s.replace(old,new,1)
+        return "\\n".join(vals).strip() or "資料は受け取れたけど回答生成に失敗したよ。もう一度同じ資料に返信してね。"'''
+s,n=re.subn(pattern,lambda m:replacement,s,count=1)
+if n!=1: raise SystemExit('ai target not found')
 
-old2='''    if question: prompt += "\\nユーザーの質問を最優先して答える: "+question[:1500]
-    return media_ai(img,mime,uid,cid,prompt)
-'''
-new2='''    if question:
+old='''    if question: prompt += "\\nユーザーの質問を最優先して答える: "+question[:1500]
+    return media_ai(img,mime,uid,cid,prompt)'''
+new='''    if question:
         prompt += "\\nユーザーの質問を最優先して答える: "+question[:1500]
         if re.search(r"(見積|初期費用|いくら|費用|合計)",question,re.I):
             prompt += """\n【見積回答ルール】
 読み取れた金額を使って、その場で初期費用の概算を計算する。
 賃料・管理費・日割り賃料/管理費・前家賃・敷金・礼金・保証会社初回保証料・火災保険・鍵交換・仲介手数料・その他必須費用を項目別に表示し、最後に合計を出す。
-仲介手数料など会社ルールが保存済みskillsにあればそれを優先する。図面にない金額は勝手に作らず「要確認」とし、確定項目だけの小計も出す。
-入居日が不明なら日割りは「入居日要確認」とし、日割りを除いた確定/概算小計を出す。単に『作れません』で終わらず、読み取れた範囲で必ず見積表を返す。"""
-    return media_ai(img,mime,uid,cid,prompt)
-'''
-if old2 not in s: raise SystemExit('analyze target not found')
-s=s.replace(old2,new2,1)
+会社ルールが保存済みskillsにあれば優先。図面にない金額は作らず「要確認」とし、確定項目だけの小計も出す。
+入居日不明なら日割りは「入居日要確認」とし、日割りを除く小計を出す。単に『作れません』で終わらず、読み取れた範囲で必ず見積を返す。"""
+    return media_ai(img,mime,uid,cid,prompt)'''
+if old not in s: raise SystemExit('analyze target not found')
+s=s.replace(old,new,1)
 p.write_text(s)
 print('patched estimate response')
