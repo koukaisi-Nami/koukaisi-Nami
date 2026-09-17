@@ -738,6 +738,40 @@ def improvement_intent(text):
         r"(?:反映|マージ|デプロイ).{0,16}(?:していい|してよい|して))",
         text or "", re.I))
 
+def semantic_intent_route(text,uid,cid):
+    """Use the upper AI only for ambiguous change requests, never normal chat."""
+    t=(text or "").strip()
+    if not can_self_improve(uid): return "chat"
+    if improvement_intent(t): return "self_improve"
+    # Cheap gate: ordinary chat never pays reviewer latency/cost.
+    if not re.search(r"(改善|変えて|変更|直し|直せ|使いにく|使いやす|こうして|ようにして|設定|ルール|覚えて|記憶|今後|これから)",t,re.I):
+        return "chat"
+    prompt="""あなたは航海士ナミの意図分類器。船長の発言を1語だけで分類する。
+self_improve: ナミ自身の機能・挙動・コード・ツール能力を新設/変更/修正する要求。
+memory: 呼び名、好み、個人設定、会話/グループ/会社ルールなど、既存機能で記憶すれば実現できる要求。
+ask: memoryかself_improveか本当に判別不能。
+chat: その他。
+重要: 「Xと送ったらYと返すようにして」「これ使いにくいからいい感じに直して」はself_improve。
+「俺のこと船長って呼んで」「このグループではキャプテンと呼んで」はmemory。
+出力は self_improve / memory / ask / chat のどれか1語のみ。"""
+    try:
+        payload={"model":MODEL,"instructions":prompt,"input":[{"role":"user","content":[{"type":"input_text","text":t[:1500]}]}],"max_output_tokens":20}
+        r=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=30)
+        if not r.ok: return "chat"
+        d=r.json(); raw=(d.get("output_text") or "").strip().lower()
+        if not raw:
+            vals=[]
+            for item in d.get("output",[]):
+                if item.get("type")=="message":
+                    for z in item.get("content",[]):
+                        if z.get("type") in ("output_text","text") and z.get("text"): vals.append(z["text"])
+            raw=" ".join(vals).strip().lower()
+        for v in ("self_improve","memory","ask","chat"):
+            if raw==v or raw.startswith(v): return v
+    except Exception as x:
+        print("semantic_intent_route",repr(x),flush=True)
+    return "chat"
+
 def improvement_plan(text,uid,cid):
     prompt="""これは航海士ナミ自身への機能改善要求です。
 要求を、既存機能を壊さない前提で短い実装計画にしてください。
@@ -1370,8 +1404,10 @@ def webhook():
         save_msg(eid,cid,uid,nm,"user",text,"text",mid,qid)
         # Owner self-improvement is classified before durable learning. This prevents
         # code/PR instructions from being accidentally stored as personal/group memory.
-        owner_self_improve = improvement_intent(text) and can_self_improve(uid)
-        if not owner_self_improve:
+        semantic_route = semantic_intent_route(text,uid,cid) if can_self_improve(uid) else "chat"
+        owner_self_improve = semantic_route == "self_improve"
+        ambiguous_change = semantic_route == "ask"
+        if not owner_self_improve and semantic_route in ("memory","chat"):
             learn_important(text,uid,cid)
 
         if grouped(e) and not called(m):
@@ -1424,7 +1460,9 @@ def webhook():
             else:
                 quick_doc="見積書を作る募集図面・PDF・文面が見つからないよ。資料を送ってから見積を指示してね。"
         awaiting=latest_awaiting(cid,uid)
-        if batch_answer:
+        if ambiguous_change:
+            ans="これは会話の設定として覚える？それともナミ自身の機能として改善する？🧭"
+        elif batch_answer:
             ans=batch_answer
         elif reminder_done:
             ans=reminder_done
