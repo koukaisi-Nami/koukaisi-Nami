@@ -1,0 +1,31 @@
+name: Integrate owner guard on main
+on:
+  push:
+    branches: [main]
+    paths:
+      - owner_guard.py
+      - tools/apply_owner_guard.py
+      - .github/workflows/apply-owner-guard-main.yml
+jobs:
+  integrate:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/apply_owner_guard.py
+      - run: python -m py_compile app.py owner_guard.py
+      - run: python -m unittest tests.test_owner_guard
+      - name: Commit guarded app to main
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name nami-ci
+          git config user.email nami-ci@users.noreply.github.com
+          git add app.py
+          git commit -m "Integrate owner-only self-improvement guard"
+          git push origin HEAD:main
