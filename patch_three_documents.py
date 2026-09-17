@@ -1,6 +1,6 @@
 from pathlib import Path
 p=Path('app.py'); s=p.read_text()
-anchor='''def task_command(text,uid,cid):\n'''
+anchor="def task_command(text,uid,cid):\n"
 if anchor not in s: raise SystemExit('task anchor missing')
 insert=r'''
 def three_document_command(text,uid,cid,qid=None):
@@ -15,7 +15,9 @@ def three_document_command(text,uid,cid,qid=None):
             blob,mime=content(qid)
             if blob:
                 if blob[:5]==b"%PDF-":mime="application/pdf"
-                prompt='''この募集図面から、お客様へそのままLINE転送できる初期費用の概算を作成してください。短く見やすく丁寧にしてください。Markdown表、###、計算過程、内部事情、前回回答への言及は禁止です。\n「【初期費用の概算】」→物件名・号室→確定できる費用を「項目：○円」で1行ずつ→「現時点の合計：○円」→金額不明だけ「【別途確認】」→短い注意書き、の順にしてください。\n図面から読めない金額は絶対に推測せず合計に含めないでください。日割り等は入居日不明なら別途確認にしてください。保存済みの会社ルールがある場合は優先してください。'''
+                prompt=("この募集図面から、お客様へそのままLINE転送できる初期費用の概算を作成してください。短く見やすく丁寧にしてください。Markdown表、見出し記号、計算過程、内部事情、前回回答への言及は禁止です。\n"
+                        "【初期費用の概算】、物件名・号室、確定できる費用を項目：金額円で1行ずつ、現時点の合計、金額不明だけ【別途確認】、短い注意書きの順にしてください。\n"
+                        "図面から読めない金額は絶対に推測せず合計に含めないでください。日割り等は入居日不明なら別途確認にしてください。保存済みの会社ルールがある場合は優先してください。")
                 return analyze(blob,mime,uid,cid,question=prompt)
         return None
     media_summary=""
@@ -27,7 +29,6 @@ def three_document_command(text,uid,cid,qid=None):
     elif re.search(r"(この|図面|画像|PDF|資料)",clean,re.I):media_summary=image_analysis(cid) or ""
     if kind=="estimate" and wants_image:
         if not media_summary:return "見積もり画像を作る募集図面がないよ。図面の画像/PDFにリプライして『ナミ、見積もり画像作って』と送って。"
-        # Marker consumed by webhook. Rendering must use deterministic template, not generative AI, so numbers cannot mutate.
         return ("__ESTIMATE_IMAGE__",media_summary)
     if kind=="estimate":
         if not media_summary:return "見積書を作る募集図面がないよ。図面にリプライして送って。"
@@ -50,8 +51,8 @@ def three_document_command(text,uid,cid,qid=None):
 
 '''
 s=s.replace(anchor,insert+anchor,1)
-old='''        quick_task=task_command(text,uid,cid)\n        awaiting=latest_awaiting(cid,uid)\n        if quick_task:\n            ans=quick_task\n'''
-new='''        quick_task=task_command(text,uid,cid)\n        quick_doc=three_document_command(text,uid,cid,qid)\n        awaiting=latest_awaiting(cid,uid)\n        if quick_task:\n            ans=quick_task\n        elif quick_doc:\n            if isinstance(quick_doc,tuple) and quick_doc[0]=="__ESTIMATE_IMAGE__":\n                ans="見積もり画像用の内容を作成したよ🧭\\n"+quick_doc[1]+"\\n※画像は固定テンプレート描画で金額を変えずに生成する仕様です。"\n            elif isinstance(quick_doc,tuple) and quick_doc[0]=="__PDF__":\n                _,pdf_kind,pdf_data=quick_doc;make_pdf(pdf_kind,pdf_data)\n                ans=pdf_kind+"の内容を作成したよ🧭\\n"+pdf_data.get("description","")\n            else:ans=quick_doc\n'''
+old="        quick_task=task_command(text,uid,cid)\n        awaiting=latest_awaiting(cid,uid)\n        if quick_task:\n            ans=quick_task\n"
+new="        quick_task=task_command(text,uid,cid)\n        quick_doc=three_document_command(text,uid,cid,qid)\n        awaiting=latest_awaiting(cid,uid)\n        if quick_task:\n            ans=quick_task\n        elif quick_doc:\n            if isinstance(quick_doc,tuple) and quick_doc[0]=='__ESTIMATE_IMAGE__':\n                ans='見積もり画像用の内容を作成したよ🧭\\n'+quick_doc[1]+'\\n※画像は固定テンプレート描画で金額を変えずに生成する仕様です。'\n            elif isinstance(quick_doc,tuple) and quick_doc[0]=='__PDF__':\n                _,pdf_kind,pdf_data=quick_doc;make_pdf(pdf_kind,pdf_data)\n                ans=pdf_kind+'の内容を作成したよ🧭\\n'+pdf_data.get('description','')\n            else:ans=quick_doc\n"
 if old not in s:raise SystemExit('webhook anchor missing')
 s=s.replace(old,new,1);p.write_text(s);print('three documents patched')
-# customer-ready-estimate-v2
+# customer-ready-estimate-v3
