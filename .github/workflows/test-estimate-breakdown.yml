@@ -1,0 +1,19 @@
+name: Test estimate breakdown
+on:
+  pull_request:
+    paths:
+      - 'estimate_document.py'
+      - 'test_estimate_document.py'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install reportlab PyMuPDF pytest
+      - run: python -m py_compile estimate_document.py
+      - run: pytest -q test_estimate_document.py
