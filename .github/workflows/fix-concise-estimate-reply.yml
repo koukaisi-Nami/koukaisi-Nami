@@ -1,0 +1,37 @@
+name: Fix concise estimate reply
+on:
+  push:
+    branches: [fix/concise-estimate-text]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python scripts/fix_concise_estimate_reply.py
+      - run: python -m py_compile app.py estimate_model.py structured_estimate_runtime.py
+      - run: |
+          grep -q '資料を読み取ったよ' app.py
+          ! grep -A5 'if not grouped(e):' app.py | grep -q 'reply(e.get("replyToken"),a)'
+      - run: |
+          python - <<'PY'
+          from estimate_model import estimate_to_text
+          d={'property':'ALTERNA銀座 904号室','items':[
+            {'key':'guarantee','label':'初回保証料','amount':133500,'breakdown':'仮'},
+            {'key':'brokerage','label':'仲介手数料','amount':136950,'original_amount':273900,'discount_amount':136950},
+            {'key':'insurance','label':'火災保険','amount':20000,'breakdown':'仮'}]}
+          t=estimate_to_text(d)
+          assert '初回保証料：133,500円（仮）' in t
+          assert '火災保険：20,000円（仮）' in t
+          assert '通常273,900円' in t and '割引136,950円' in t
+          assert '物件概要' not in t and '交通' not in t
+          print(t)
+          PY
+      - name: Commit runtime patch
+        run: |
+          git config user.name nami-ci
+          git config user.email nami-ci@users.noreply.github.com
+          git add app.py
+          git diff --cached --quiet || git commit -m 'Keep raw listing analysis internal'
+          git push

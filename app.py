@@ -1222,8 +1222,12 @@ def webhook():
             label="PDF解析" if is_pdf else "画像解析"
             save_msg(eid,cid,uid,nm,"user",f"[{label}]\n"+a,"file" if is_pdf else "image",mid,qid)
             if not grouped(e):
-                save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",a)
-                reply(e.get("replyToken"),a)
+                # Keep the detailed extraction internally for the estimate tool.
+                # Do not dump raw listing analysis into LINE; the next estimate
+                # instruction renders the canonical concise estimate instead.
+                received="資料を読み取ったよ🧭 見積もり条件を送ってね。"
+                save_msg("assistant:"+eid,cid,"bot","航海士ナミ","assistant",received)
+                reply(e.get("replyToken"),received)
             continue
 
         text=m.get("text","")
