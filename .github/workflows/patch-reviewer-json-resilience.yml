@@ -1,0 +1,92 @@
+name: Patch reviewer JSON resilience
+on:
+  push:
+    branches: [chapi/reviewer-json-resilience-v1]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore: patch reviewer JSON resilience') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch supervisor reviewer
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text()
+          start=s.index('def supervisor_review(req_text,current,candidate,attempt):')
+          end=s.index('\ndef reviewed_candidate(req_text):', start)
+          old=s[start:end]
+          new=r'''def _parse_supervisor_json(raw):
+    """Parse reviewer output defensively; tolerate markdown fences and truncated JSON."""
+    raw=(raw or '').strip()
+    raw=re.sub(r"^```(?:json)?\s*|\s*```$",'',raw.strip())
+    try:
+        return json.loads(raw)
+    except Exception:
+        # Salvage the two required fields from a truncated/escaped JSON response.
+        action=re.search(r'"action"\s*:\s*"(approve|fix)"',raw,re.I)
+        feedback=re.search(r'"feedback"\s*:\s*"((?:\\.|[^"\\])*)',raw,re.I|re.S)
+        if action:
+            fb=feedback.group(1) if feedback else ''
+            try: fb=json.loads('"'+fb+'"') if fb else ''
+            except Exception: fb=fb.replace('\\"','"').replace('\\n','\n')
+            return {'action':action.group(1).lower(),'feedback':fb}
+        raise
+
+def supervisor_review(req_text,current,candidate,attempt):
+    """Review proposed code with bounded recovery for empty/malformed/truncated JSON."""
+    targets=improvement_targets(req_text,candidate)
+    selected="\n\n".join(f"【{name}】\n{body}" for name,body in targets.items())
+    instruction="""あなたは航海士ナミの上位コードレビューAI。要求と候補コードを厳格に照合する。
+既存機能・個人/グループ/会社記憶の分離・owner guard・承認前マージ禁止を壊さないこと。
+秘密情報を要求/出力しない。問題がなければapprove。問題があればfixと具体的な修正指示を返す。
+JSONのみ: {\"action\":\"approve|fix\",\"feedback\":\"具体的な理由と修正指示\"}。
+必ずJSONを最後まで閉じて返す。"""
+    text=f"【要求】\n{req_text}\n【レビュー試行】{attempt}/3\n【候補コード（関連関数のみ）】\n{selected}"
+    last_error=''
+    for retry in range(1,4):
+        payload={"model":MODEL,"instructions":instruction+ ("\n前回はJSONが壊れていた。短く完全なJSONを返すこと。" if last_error else ""),"input":[{"role":"user","content":[{"type":"input_text","text":text}]}],"max_output_tokens":900}
+        try:
+            r=requests.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=payload,timeout=120)
+            if not r.ok:
+                last_error=f"HTTP {r.status_code}"
+                if r.status_code not in (408,429,500,502,503,504): break
+                continue
+            d=r.json(); out=d.get("output_text","")
+            if not out:
+                xs=[]
+                for item in d.get("output",[]):
+                    if item.get("type")=="message":
+                        for z in item.get("content",[]):
+                            if z.get("type")=="output_text": xs.append(z.get("text",""))
+                out="\n".join(xs)
+            if not out.strip():
+                last_error='empty reviewer output'; continue
+            try:data=_parse_supervisor_json(out)
+            except Exception as x:
+                last_error=f"invalid reviewer JSON: {x}"; continue
+            action=str(data.get("action","")).lower()
+            if action not in ("approve","fix"):
+                last_error='invalid reviewer action'; continue
+            return action,str(data.get("feedback","")).strip()[:4000]
+        except Exception as x:
+            last_error=repr(x)
+    raise RuntimeError("上位AIレビューJSONを3回以内に正常化できなかった: "+last_error[:500])
+'''
+          if old.count('def supervisor_review') != 1:
+              raise SystemExit('target function not found exactly once')
+          p.write_text(s[:start]+new+s[end:])
+          print('patched supervisor_review')
+          PY
+      - name: Syntax check
+        run: python -m py_compile app.py
+      - name: Commit patch
+        run: |
+          git config user.name 'nami-review-guard'
+          git config user.email 'nami-review-guard@users.noreply.github.com'
+          git add app.py
+          git diff --cached --quiet || git commit -m 'chore: patch reviewer JSON resilience'
+          git push
