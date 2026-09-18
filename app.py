@@ -979,7 +979,13 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         value=str(value or "").strip()
         return value if value.endswith("⚓️") else value+"⚓️"
 
-    parts=[{"type":"input_text","text":ctx(uid,cid,text,extra)+"\n【今回】\n"+text[:4000]}]
+    display_rules=(
+        "\n【表示ルール】\n"
+        "回答は見やすさを優先し、項目ごとに改行して箇条書きまたは短い見出しで整理する。"
+        "家賃などの項目名を括弧で囲まない。特に『（家賃）』『(家賃)』のような表記は使わず、"
+        "『家賃』とだけ表示する。装飾目的の丸括弧はできるだけ使わず、金額・条件・注意点を簡潔に分けて書く。"
+    )
+    parts=[{"type":"input_text","text":ctx(uid,cid,text,extra)+display_rules+"\n【今回】\n"+text[:4000]}]
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
     needs_web=bool(re.search(r"(最新|今日|現在|ニュース|天気|相場|営業時間|公式|検索して|調べて|web|ネット)",text or "",re.I))
