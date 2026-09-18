@@ -34,8 +34,13 @@ def _extract(raw):
 def _has_month(t): return bool(re.search(r'(?:\d{4}[年/\-.])?\d{1,2}月|\d{4}[-/]\d{1,2}[-/]\d{1,2}',t or ''))
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
     req=prompt(instruction,material,property_name); last=''
-    for attempt in range(2):
-        last=ai_call(req if attempt==0 else req+'\n有効なJSONオブジェクトだけ返す。',uid,cid)
+    attempts=[
+        req,
+        req+'\n前回はJSONとして壊れていた。説明・Markdown・絵文字・末尾文字を一切付けず、有効なJSONオブジェクトだけ返す。全項目を短くする。',
+        req+'\n最終再生成。必ずJSON.parse可能なJSONだけ返す。notesとbreakdownは必要最小限。文字列内改行禁止。出力を途中で切らない。'
+    ]
+    for attempt_req in attempts:
+        last=ai_call(attempt_req,uid,cid)
         try:
             d=normalize_estimate(_extract(last)); bykey={x.get('key'):x for x in d['items']}; fixed=[]
             for key,label in FIXED:
@@ -44,7 +49,8 @@ def generate(ai_call,instruction,material,uid,cid,property_name=''):
             if re.search(r'\d{1,2}日(?:入居)?',instruction or '') and not _has_month(instruction):
                 r=d['items'][0]; r.update({'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'})
             return normalize_estimate(d)
-        except Exception: pass
+        except Exception as x:
+            print("ESTIMATE_JSON_RETRY",repr(x),str(last)[:500],flush=True)
     raise ValueError('estimate JSON invalid after repair')
 def generate_text(ai_call,instruction,material,uid,cid,property_name=''):
     data=generate(ai_call,instruction,material,uid,cid,property_name); return data,estimate_to_text(data)
