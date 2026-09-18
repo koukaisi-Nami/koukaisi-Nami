@@ -1677,10 +1677,14 @@ def webhook():
                     ans=ai(text,uid,cid,extra=extra)
         batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None
         if batch_marker and isinstance(batch_answer,list):
+            # Explicit image/PDF batch request: one property = one artifact.
+            # Do not add text or another format unless the user explicitly requested it.
             base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
             saved_ans='\\n\\n'.join((x.get('text','') if isinstance(x,dict) else str(x)) for x in batch_answer)
             save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',saved_ans)
             send_batch_estimate_artifacts(e.get('replyToken'),line_target(e),batch_answer,base,batch_marker); continue
+        # No artifact format requested: existing list path sends each property's text separately.
+        # This intentionally avoids bundling several properties into one customer-facing estimate.
         saved_ans='\\n\\n'.join((x.get('text','') if isinstance(x,dict) else str(x)) for x in ans) if isinstance(ans,(list,tuple)) else ans
         save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',saved_ans)
         if isinstance(ans,list):

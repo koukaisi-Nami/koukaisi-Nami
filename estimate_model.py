@@ -2,6 +2,8 @@
 Text, PNG and PDF must all be derived from this same object.
 """
 
+import re
+
 def _money(v):
     if v is None or v == '': return None
     if isinstance(v,(int,float)): return int(v)
@@ -30,20 +32,32 @@ def normalize_estimate(data):
     total=sum(known) if known else None
     return {'property':str(data.get('property') or '物件名要確認'),'move_in':str(data.get('move_in') or ''),'items':rows,'total':total,'total_complete':bool(rows) and all(r['amount'] is not None for r in rows),'notes':[str(x) for x in (data.get('notes') or [])][:6]}
 
+def _customer_detail(row):
+    """Only the two customer-facing annotations approved for estimates."""
+    key=row.get('key') or ''
+    b=(row.get('breakdown') or '').strip()
+    if key=='current_rent':
+        m=re.search(r'(\\d{1,2}/\\d{1,2}〜\\d{1,2}/\\d{1,2})',b)
+        return m.group(1) if m else b
+    if key=='brokerage':
+        if row.get('amount')==0: return '無料'
+        if row.get('discount_amount'):
+            original=row.get('original_amount')
+            amount=row.get('amount')
+            if original and amount is not None and abs(amount*2-original)<=2: return '半額'
+        m=re.search(r'(\\d+(?:\\.\\d+)?ヶ月|半額|無料)',b)
+        return m.group(1) if m else ''
+    return ''
+
 def estimate_to_text(data):
-    """Compact LINE/customer text. Internal notes never leak into this output."""
+    """Compact LINE/customer text; image/PDF use the same visible detail policy."""
     d=normalize_estimate(data); out=['【初期費用概算】',d['property']]
     if d['move_in']: out.append('入居日：'+d['move_in'])
     for r in d['items']:
         amount='要確認' if r['amount'] is None else f"{r['amount']:,}円"
-        detail=('（'+r['breakdown']+'）') if r['breakdown'] else ''
-        out.append(f"{r['label']}：{amount}{detail}")
-        if r['discount_amount']:
-            bits=[]
-            if r['original_amount'] is not None: bits.append(f"通常{r['original_amount']:,}円")
-            bits.append(f"割引{r['discount_amount']:,}円")
-            out.append('  ↳ '+' / '.join(bits))
-    total_label='合計' if d['total_complete'] else '現時点概算'
-    out.append(total_label+'：'+('要確認' if d['total'] is None else f"{d['total']:,}円"))
-    # No customer-facing footnotes. Unknown rows themselves communicate what remains unresolved.
-    return '\n'.join(out)
+        detail=_customer_detail(r)
+        out.append(f"{r['label']}：{amount}"+(('（'+detail+'）') if detail else ''))
+    out += ['', '━━━━━━━━━━', '初期費用合計：'+('要確認' if d['total'] is None else f"{d['total']:,}円"), '━━━━━━━━━━']
+    if not d['total_complete']:
+        out.append('※要確認項目は合計に含まれていません')
+    return '\\n'.join(out)
