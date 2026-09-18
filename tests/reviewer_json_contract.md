@@ -1,0 +1,3 @@
+# Reviewer JSON safety contract
+
+Reviewer output must be a complete JSON object. Truncated, empty, malformed, or invalid-action responses are rejected and must be retried by the caller. Never infer approval from partial output.
