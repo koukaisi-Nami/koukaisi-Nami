@@ -982,11 +982,18 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         value=str(value or "").strip()
         return value if value.endswith("⚓️") else value+"⚓️"
 
-    parts=[{"type":"input_text","text":ctx(uid,cid,text,extra)+"\n【今回】\n"+text[:4000]}]
+    runtime_task=task_for_text(text)
+    # Fast chat: ordinary conversation keeps short recent context but skips
+    # expensive long-term memory / skill retrieval. Business/document work keeps full context.
+    if runtime_task=="chat" and not img and not extra:
+        recent="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x[:500]}" for r,n,x in history(cid))
+        request_context=f"【直近の会話】\n{recent or 'なし'}"
+    else:
+        request_context=ctx(uid,cid,text,extra)
+    parts=[{"type":"input_text","text":request_context+"\n【今回】\n"+text[:4000]}]
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
     needs_web=bool(re.search(r"(最新|今日|現在|ニュース|天気|相場|営業時間|公式|検索して|調べて|web|ネット)",text or "",re.I))
-    runtime_task=task_for_text(text)
     if img: runtime_task="vision"
     elif needs_web and runtime_task=="chat": runtime_task="web"
     runtime_model=model_for_task(runtime_task,OPENAI_KEY,HTTP)
