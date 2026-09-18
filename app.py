@@ -975,6 +975,9 @@ def format_retry(text):
 def ai(text,uid,cid,img=None,mime=None,extra=""):
     started=time.perf_counter()
 
+    if (text or "").strip()=="船長確認":
+        return "確認OK🧭"
+
     def finish(value):
         value=str(value or "").strip()
         return value if value.endswith("⚓️") else value+"⚓️"
