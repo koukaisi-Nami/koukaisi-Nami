@@ -938,6 +938,25 @@ def media_ai(blob,mime,uid,cid,question=""):
         except Exception as x: print("media_ai_pdf",repr(x),flush=True); return "PDF解析で接続エラー"
     return ai(q,uid,cid,img=blob,mime=mime)
 
+def real_estate_knowledge(text):
+    """Load compact, task-relevant real-estate knowledge without bloating ordinary chat."""
+    q=text or ""
+    if not re.search(r"(物件|不動産|賃貸|売買|見積|初期費用|申込|審査|契約|重説|保証|仲介|ローン|登記|決済|利回り|敷金|礼金|家賃|管理費)",q,re.I):
+        return ""
+    paths=["knowledge/real_estate_core.md"]
+    if re.search(r"(賃貸|見積|初期費用|申込|審査|保証|敷金|礼金|家賃|管理費|鍵|サポート)",q,re.I):
+        paths += ["knowledge/rental_operations.md","knowledge/estimate_quality.md"]
+    if re.search(r"(売買|購入|売却|ローン|登記|決済|手付|利回り|投資)",q,re.I):
+        paths += ["knowledge/sales_operations.md"]
+    chunks=[]
+    for path in paths:
+        try:
+            with open(path,"r",encoding="utf-8") as fh:
+                chunks.append(fh.read()[:8000])
+        except OSError:
+            pass
+    return "\n\n".join(chunks)
+
 SYSTEM="""あなたは航海士ナミ。優秀な日本の不動産賃貸仲介営業マン兼営業事務。
 ヒアリング、物件提案、図面読解、初期費用見積、申込、審査、保証会社、必要書類、重説・契約・鍵渡し、
 顧客フォロー、営業LINE、請求書整理に強い。
@@ -990,6 +1009,9 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         request_context=f"【直近の会話】\n{recent or 'なし'}"
     else:
         request_context=ctx(uid,cid,text,extra)
+    property_knowledge=real_estate_knowledge(text)
+    if property_knowledge:
+        request_context += "\n【不動産専門Knowledge Base】\n" + property_knowledge
     parts=[{"type":"input_text","text":request_context+"\n【今回】\n"+text[:4000]}]
     if img:
         parts.append({"type":"input_image","image_url":f"data:{mime or 'image/jpeg'};base64,{base64.b64encode(img).decode()}","detail":"high"})
