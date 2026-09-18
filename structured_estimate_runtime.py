@@ -18,9 +18,19 @@ def prompt(instruction,material,property_name=''):
 【今回の指示】{instruction}
 【資料】{material}'''
 def _extract(raw):
-    raw=(raw or '').strip(); raw=re.sub(r'^```(?:json)?\s*|\s*```$','',raw,flags=re.I|re.S); a=raw.find('{'); b=raw.rfind('}')
+    raw=(raw or '').strip()
+    raw=re.sub(r'^\`\`\`(?:json)?\\s*|\\s*\`\`\`$','',raw,flags=re.I|re.S)
+    a=raw.find('{'); b=raw.rfind('}')
     if a<0 or b<=a: raise ValueError('no json')
-    return json.loads(raw[a:b+1])
+    candidate=raw[a:b+1]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        candidate=(candidate.replace('“','"').replace('”','"').replace('„','"')
+                            .replace('’',"'").replace('‘',"'"))
+        candidate=re.sub(r',\\s*([}\\]])',r'\\1',candidate)
+        candidate=''.join(ch if ch in '\\t\\n\\r' or ord(ch)>=32 else ' ' for ch in candidate)
+        return json.loads(candidate)
 def _has_month(t): return bool(re.search(r'(?:\d{4}[年/\-.])?\d{1,2}月|\d{4}[-/]\d{1,2}[-/]\d{1,2}',t or ''))
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
     req=prompt(instruction,material,property_name); last=''
