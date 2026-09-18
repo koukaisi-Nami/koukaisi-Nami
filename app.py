@@ -3,6 +3,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from functools import wraps
 from intent_router import should_create_reminder, reminder_has_enough_context, reminder_needs_timing, reminder_needs_timing
+from line_estimate_intent import should_batch_estimate, requested_count
 from flask import Flask, request, abort, Response, render_template_string, send_file
 from estimate_document import make_estimate_document, make_estimate_image
 from structured_estimate_runtime import generate_text as structured_estimate
@@ -1593,9 +1594,12 @@ def webhook():
                 reply(e.get('replyToken'),proactive)
             continue
         batch_answer=None
-        if is_batch_estimate_command(text):
-            items=recent_estimate_batch(cid)
-            if not items:
+        items=recent_estimate_batch(cid)
+        if should_batch_estimate(text,len(items)):
+            expected_count=requested_count(text)
+            if expected_count is not None and expected_count != len(items):
+                batch_answer=f'{expected_count}件の指定だけど、直近の見積資料は{len(items)}件あるよ。取り違え防止のため対象を確認してね。'
+            elif not items:
                 batch_answer='直近15分の見積資料が見つからないよ。PDFや画像をまとめて送ってから『ナミ、まとめて見積もり』と送ってね。'
             else:
                 groups,ambiguous=group_attachments(items)
