@@ -2,6 +2,8 @@
 Text, PNG and PDF must all be derived from this same object.
 """
 
+import re
+
 def _money(v):
     if v is None or v == '': return None
     if isinstance(v,(int,float)): return int(v)
