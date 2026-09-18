@@ -1612,7 +1612,15 @@ def webhook():
         estimate_intent=bool(re.search(r'(見積|初期費用)',text,re.I) or (re.search(r'仲介.{0,8}(?:半額|無料|割引)',text,re.I) and re.search(r'(画像|PNG|PDF|作って|出して)',text,re.I)))
         quick_doc=None if estimate_intent else three_document_command(text,uid,cid,qid)
         if estimate_intent:
-            latest_material=image_analysis(cid,qid) if qid else image_analysis(cid)
+            # A LINE reply to an uploaded PDF/image is an explicit material selection.
+            # Never silently fall back to another recent property when that quoted
+            # attachment cannot be resolved: that could produce a wrong estimate.
+            if qid:
+                latest_material=image_analysis(cid,qid)
+                if not latest_material:
+                    print('ESTIMATE_QUOTED_MATERIAL_MISSING',cid,qid,flush=True)
+            else:
+                latest_material=image_analysis(cid)
             if latest_material:
                 try:
                     estimate_data,estimate_text=structured_estimate(ai,text,latest_material,uid,cid)
