@@ -14,8 +14,8 @@ class EstimateModelTests(unittest.TestCase):
     def test_proration_and_discount_are_preserved(self):
         t=estimate_to_text(self.sample())
         self.assertIn('日割り16日分',t)
-        self.assertIn('割引136,950円',t)
-        self.assertIn('合計：548,350円',t)
+        self.assertIn('仲介手数料：136,950円（半額）',t)
+        self.assertIn('初期費用合計：548,350円',t)
     def test_unknown_never_drops_structure(self):
         d=normalize_estimate({'property':'X','items':[{'label':'鍵交換','amount':None}]})
         self.assertEqual(len(d['items']),1)
