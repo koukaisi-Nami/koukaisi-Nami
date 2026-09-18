@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-from estimate_model import normalize_estimate
+from estimate_model import normalize_estimate, _customer_detail
 
 FONT='HeiseiKakuGo-W5'; pdfmetrics.registerFont(UnicodeCIDFont(FONT))
 
@@ -29,14 +29,14 @@ def make_estimate_document(payload):
     c.setFillColorRGB(0,0,0); c.setFont(FONT,14); c.drawString(50*mm,y-4*mm,d['property'][:35]); c.setFont(FONT,8); c.drawRightString(w-14*mm,y-4*mm,datetime.now().strftime('発行日 %Y/%m/%d'))
     if d.get('move_in'): c.setFillColorRGB(*navy); c.setFont(FONT,10); c.drawString(50*mm,y-10*mm,'入居日：'+d['move_in'][:24])
     top=y-(22*mm if d.get('move_in') else 18*mm); left=14*mm; right=w-14*mm; col1=72*mm; col2=132*mm; rowh=10*mm
-    c.setFillColorRGB(*navy); c.rect(left,top-rowh,right-left,rowh,fill=1,stroke=0); c.setFillColorRGB(1,1,1); c.setFont(FONT,10); c.drawCentredString((left+col1)/2,top-7*mm,'項目'); c.drawCentredString((col1+col2)/2,top-7*mm,'内訳'); c.drawCentredString((col2+right)/2,top-7*mm,'金額（税込）')
+    c.setFillColorRGB(*navy); c.rect(left,top-rowh,right-left,rowh,fill=1,stroke=0); c.setFillColorRGB(1,1,1); c.setFont(FONT,10); c.drawCentredString((left+col1)/2,top-7*mm,'項目'); c.drawCentredString((col1+col2)/2,top-7*mm,'内訳'); c.drawCentredString((col2+right)/2,top-7*mm,'金額')
     yy=top-rowh
     for row in d.get('items',[])[:15]:
         discounted=bool(row.get('discount_amount')); c.setStrokeColorRGB(*(red if discounted else (.55,.58,.62))); c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh)
         c.setFillColorRGB(*(red if discounted else (0,0,0))); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,row.get('label','')[:20]); c.setFont(FONT,7.5); c.drawString(col1+3*mm,yy-6.8*mm,_detail(row)[:30])
         amount=row.get('amount'); value='要確認' if amount is None else f'{amount:,} 円'; c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,value); yy-=rowh
-    yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'お支払い概算合計' if d.get('total_complete') else '現時点概算'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('要確認' if d.get('total') is None else f"{d['total']:,} 円"))
-    if not d.get('total_complete',True): c.setFillColorRGB(0,0,0); c.setFont(FONT,8); c.drawString(left,yy-30*mm,'※ 未確定項目があるため、金額が変動する場合があります。')
+    yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'初期費用合計'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('要確認' if d.get('total') is None else f"{d['total']:,} 円"))
+    if not d.get('total_complete',True): c.setFillColorRGB(0,0,0); c.setFont(FONT,8); c.drawString(left,yy-30*mm,'※要確認項目は合計に含まれていません')
     c.setFont(FONT,8); c.drawRightString(right,14*mm,'Steer Ship株式会社'); c.showPage(); c.save(); out.seek(0); return out
 
 def make_estimate_image(payload):
