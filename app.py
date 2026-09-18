@@ -1487,6 +1487,9 @@ def start_frontier_image_generation(cid,target,prompt,base):
             push_line(target,"画像生成でエラーが出たよ。既存機能には影響していないよ。")
     threading.Thread(target=worker,daemon=True,name="nami-image-gen").start()
 
+def is_exact_test_command(text):
+    return text == 'テスト'
+
 @app.get("/")
 def health():return "航海士ナミ FINAL 部長モード OK",200
 
@@ -1498,6 +1501,9 @@ def webhook():
     for e in (request.get_json(silent=True) or {}).get('events',[]):
         if e.get('type')!='message': continue
         m=e.get('message',{}); typ=m.get('type')
+        if typ=='text' and is_exact_test_command(m.get('text','')):
+            reply(e.get('replyToken'),'航海テスト成功🧭')
+            continue
         if typ not in ('text','image','file','audio'): continue
         cid,uid=ids(e); nm=name(e); eid=e.get('webhookEventId') or m.get('id'); mid=m.get('id')
         remember_line_member(cid,uid,nm)
