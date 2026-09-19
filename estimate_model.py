@@ -33,24 +33,22 @@ def normalize_estimate(data):
     return {'property':str(data.get('property') or '物件名要確認'),'move_in':str(data.get('move_in') or ''),'items':rows,'total':total,'total_complete':bool(rows) and all(r['amount'] is not None for r in rows),'notes':[str(x) for x in (data.get('notes') or [])][:6]}
 
 def _customer_detail(row):
-    """Only the two customer-facing annotations approved for estimates."""
+    """Only concise customer-facing annotations approved for estimates."""
     key=row.get('key') or ''
     b=(row.get('breakdown') or '').strip()
     if key=='current_rent':
-        m=re.search(r'(\\d{1,2}/\\d{1,2}〜\\d{1,2}/\\d{1,2})',b)
-        if m: return m.group(1)
-        m=re.search(r'(日割り\\d{1,2}日分)',b)
-        return m.group(1) if m else ''
+        if '日割り' in b and '日分' in b:
+            return b if len(b) <= 12 else ''
+        return ''
     if key=='brokerage':
         if row.get('amount')==0: return '無料'
         if row.get('discount_amount'):
             original=row.get('original_amount')
             amount=row.get('amount')
             if original and amount is not None and abs(amount*2-original)<=2: return '半額'
-        m=re.search(r'(\\d+(?:\\.\\d+)?ヶ月|半額|無料)',b)
-        return m.group(1) if m else ''
+        if b in ('半額','無料'): return b
+        return ''
     return ''
-
 def estimate_to_text(data):
     """Compact LINE/customer text; image/PDF use the same visible detail policy."""
     d=normalize_estimate(data); out=['【初期費用概算】',d['property']]
