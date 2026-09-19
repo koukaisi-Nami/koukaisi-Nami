@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {ref: chapi/self-improve-resilience-v1}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: {python-version: '3.11'}
       - name: Apply patch
         run: python scripts/patch_self_improve_resilience.py
