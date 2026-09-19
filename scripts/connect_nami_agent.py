@@ -2,10 +2,8 @@ from pathlib import Path
 
 p=Path('app.py')
 s=p.read_text()
-old='from estimate_document import make_estimate_document, make_estimate_image
-'
-new=old+'from nami_agent import plan_with_ai
-'
+old='from estimate_document import make_estimate_document, make_estimate_image\\n'
+new=old+'from nami_agent import plan_with_ai\\n'
 if 'from nami_agent import plan_with_ai' not in s:
     assert old in s
     s=s.replace(old,new,1)
