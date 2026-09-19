@@ -50,12 +50,17 @@ def _customer_detail(row):
         return ''
     return ''
 def estimate_to_text(data):
-    """Compact LINE/customer text; image/PDF use the same visible detail policy."""
-    d=normalize_estimate(data); out=['【初期費用概算】',d['property']]
-    if d['move_in']: out.append('入居日：'+d['move_in'])
+    """Readable LINE/customer text; image/PDF use the same visible detail policy."""
+    d=normalize_estimate(data)
+    out=[f"【{d['property']}】", "", "初期費用概算", ""]
+    if d['move_in']:
+        out += ['入居日　'+d['move_in'], '']
     for r in d['items']:
         amount='－' if r['amount'] is None else f"{r['amount']:,}円"
         detail=_customer_detail(r)
-        out.append(f"{r['label']}：{amount}"+(('（'+detail+'）') if detail else ''))
-    out += ['', '━━━━━━━━━━', '初期費用合計：'+('－' if d['total'] is None else f"{d['total']:,}円"), '━━━━━━━━━━']
-    return '\\n'.join(out)
+        if detail:
+            amount += '（'+detail+'）'
+        out.append(f"{r['label']}　{amount}")
+    total='－' if d['total'] is None else f"{d['total']:,}円"
+    out += ['', '━━━━━━━━━━━━', f"合計　{total}", '━━━━━━━━━━━━']
+    return '\n'.join(out)
