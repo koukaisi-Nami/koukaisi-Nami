@@ -20,6 +20,9 @@ class EstimateModelTests(unittest.TestCase):
         d=normalize_estimate({'property':'X','items':[{'label':'鍵交換','amount':None}]})
         self.assertEqual(len(d['items']),1)
         self.assertFalse(d['total_complete'])
-        self.assertIn('要確認',estimate_to_text(d))
+        text=estimate_to_text(d)
+        self.assertIn('鍵交換：－',text)
+        self.assertNotIn('要確認',text)
+        self.assertNotIn('※要確認項目は合計に含まれていません',text)
 
 if __name__=='__main__': unittest.main()
