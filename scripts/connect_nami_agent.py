@@ -2,11 +2,11 @@ from pathlib import Path
 
 p=Path('app.py')
 s=p.read_text()
-old='from estimate_document import make_estimate_document, make_estimate_image\\n'
-new=old+'from nami_agent import plan_with_ai\\n'
 if 'from nami_agent import plan_with_ai' not in s:
-    assert old in s
-    s=s.replace(old,new,1)
+    anchor='from estimate_document import make_estimate_document, make_estimate_image'
+    if anchor not in s:
+        raise AssertionError('estimate_document import anchor missing')
+    s=s.replace(anchor, anchor+'\\nfrom nami_agent import plan_with_ai', 1)
 
 old="""        batch_answer=None
         if is_batch_estimate_command(text):
