@@ -73,9 +73,9 @@ def _apply_instruction_overrides(d,instruction,today=None):
             else: amount=round(full)
             broker.update({'original_amount':round(full),'discount_amount':round(full-amount),'amount':amount,'status':'known'})
     # Force explicit day-only move-in into output and calculate current rent from extracted monthly current/next rent.
-    m=re.search(r'入居(?:日)?(?:は|：|:|を)?\s*(\d{1,2})日',text)
+    m=re.search(r'(?:入居(?:日)?(?:は|：|:|を)?\s*(\d{1,2})日|(\d{1,2})日\s*入居)',text)
     if m and not _has_month(text):
-        day=int(m.group(1)); base=today or date.today(); y,mo=base.year,base.month
+        day=int(m.group(1) or m.group(2)); base=today or date.today(); y,mo=base.year,base.month
         try: candidate=date(y,mo,day)
         except ValueError: candidate=None
         if not candidate or candidate < base:
