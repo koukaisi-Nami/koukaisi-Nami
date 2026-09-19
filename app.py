@@ -1287,8 +1287,8 @@ def batch_estimates_using_single(groups,user_instruction,uid,cid):
         room=p.get('room') or ''
         prop_name=label+((' '+room) if room else '')
         data,estimate=structured_estimate(ai,instruction,material,uid,cid,prop_name)
-        header=f"【{index}/{total} {prop_name}】"
-        answers.append({'data':data,'text':header+"\n"+estimate})
+        # estimate_to_text already includes the property name; avoid showing it twice.
+        answers.append({'data':data,'text':estimate})
     return answers
 
 def three_document_command(text,uid,cid,qid=None):
