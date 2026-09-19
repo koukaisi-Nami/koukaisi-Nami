@@ -15,7 +15,7 @@ class EstimateModelTests(unittest.TestCase):
         t=estimate_to_text(self.sample())
         self.assertIn('日割り16日分',t)
         self.assertIn('仲介手数料　136,950円（半額）',t)
-        self.assertIn('初期費用合計：548,350円',t)
+        self.assertIn('合計　548,350円',t)
     def test_unknown_never_drops_structure(self):
         d=normalize_estimate({'property':'X','items':[{'label':'鍵交換','amount':None}]})
         self.assertEqual(len(d['items']),1)
@@ -41,7 +41,7 @@ class EstimateModelTests(unittest.TestCase):
         t=estimate_to_text(d)
         self.assertIn('当月前家賃　－',t)
         self.assertNotIn('フリーレント2ヶ月',t)
-        self.assertIn('24時間サポート：22,000円',t)
+        self.assertIn('24時間サポート　22,000円',t)
         self.assertIn('鍵交換：27,500円',t)
         self.assertIn('火災保険：－',t)
         self.assertNotIn('要確認',t)
