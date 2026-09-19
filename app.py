@@ -1571,17 +1571,10 @@ def webhook():
             save_image(cid,uid,mid,a); add_estimate_batch_item(cid,uid,mid,a)
             label='PDF解析' if is_pdf else '画像解析'
             save_msg(eid,cid,uid,nm,'user',f'[{label}]\\n'+a,'file' if is_pdf else 'image',mid,qid)
-            if not grouped(e):
-                # A single uploaded floorplan/PDF is itself an estimate request.
-                # Produce the default estimate immediately; later text can revise
-                # move-in date, brokerage discount/free, or other conditions.
-                try:
-                    estimate_data,estimate_text=structured_estimate(ai,'',a,uid,cid)
-                    save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant',estimate_text)
-                    reply(e.get('replyToken'),estimate_text)
-                except Exception as x:
-                    print('structured_estimate_media_auto',repr(x),flush=True)
-                    reply(e.get('replyToken'),'見積データの生成でエラーが出た。通常チャットでは代替せず停止したよ。')
+            # Uploading a floorplan/PDF only stores the material.
+            # Never interrupt normal individual/group chat with an estimate.
+            # A later explicit estimate request uses this saved material immediately,
+            # with defaults for any conditions the user did not specify.
             continue
         text=m.get('text','')
         save_msg(eid,cid,uid,nm,'user',text,'audio' if voice_input else 'text',mid,qid)
