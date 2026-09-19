@@ -1003,14 +1003,19 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         return value if value.endswith("⚓️") else value+"⚓️"
 
     runtime_task=task_for_text(text)
+    estimate_json_mode=bool(re.match(r"^募集図面から初期費用を計算しJSONだけ返す", (text or "").strip()))
+    if estimate_json_mode:
+        # Structured-estimate prompt already contains the authoritative material/schema.
+        runtime_task="estimate"
+        request_context=""
     # Fast chat: ordinary conversation keeps short recent context but skips
     # expensive long-term memory / skill retrieval. Business/document work keeps full context.
-    if runtime_task=="chat" and not img and not extra:
+    elif runtime_task=="chat" and not img and not extra:
         recent="\n".join(f"{'ナミ' if r=='assistant' else (n or 'ユーザー')}: {x[:500]}" for r,n,x in history(cid))
         request_context=f"【直近の会話】\n{recent or 'なし'}"
     else:
         request_context=ctx(uid,cid,text,extra)
-    property_knowledge=real_estate_knowledge(text)
+    property_knowledge="" if estimate_json_mode else real_estate_knowledge(text)
     if property_knowledge:
         request_context += "\n【不動産専門Knowledge Base】\n" + property_knowledge
     parts=[{"type":"input_text","text":request_context+"\n【今回】\n"+text[:4000]}]
@@ -1021,9 +1026,10 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
     elif needs_web and runtime_task=="chat": runtime_task="web"
     runtime_model=model_for_task(runtime_task,OPENAI_KEY,HTTP)
     runtime_reasoning=reasoning_for_task(runtime_task)
-    payload={"model":runtime_model,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":900}
+    output_budget=3200 if estimate_json_mode else 900
+    payload={"model":runtime_model,"instructions":SYSTEM,"input":[{"role":"user","content":parts}],"max_output_tokens":output_budget}
     if runtime_reasoning != "none":
-        payload["reasoning"]={"effort":runtime_reasoning}
+        payload["reasoning"]={"effort":"low" if estimate_json_mode else runtime_reasoning}
     if needs_web:
         payload["tools"]=[{"type":"web_search"}]
         payload["tool_choice"]="auto"
@@ -1059,7 +1065,7 @@ def ai(text,uid,cid,img=None,mime=None,extra=""):
         retry=dict(payload)
         retry.pop("tools",None)
         retry.pop("tool_choice",None)
-        retry["max_output_tokens"]=1600 if img else 1200
+        retry["max_output_tokens"]=4000 if estimate_json_mode else (1600 if img else 1200)
         rr=HTTP.post(OA,headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json=retry,timeout=120)
         if not rr.ok:
             print("OPENAI_RETRY",rr.status_code,rr.text[:2000],flush=True)
