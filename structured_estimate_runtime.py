@@ -50,6 +50,51 @@ def _resolve_day_only_move_in(instruction, today=None):
         month += 1
         if month == 13: year += 1; month = 1
     return text
+def _apply_instruction_overrides(d,instruction,today=None):
+    """Apply user-specified move-in/commission rules deterministically after AI extraction."""
+    text=instruction or ''
+    rows={x.get('key'):x for x in d.get('items',[])}
+    rent=rows.get('next_rent',{}).get('amount')
+    # next_rent may include management fee, so prefer explicit rent from material-derived breakdown when available.
+    # Brokerage is legally/calculation-wise based on rent only; AI's original_amount should represent full 1.1 months.
+    broker=rows.get('brokerage')
+    if broker:
+        full=broker.get('original_amount')
+        if not isinstance(full,(int,float)) or full <= 0:
+            full=broker.get('amount')
+        mode=None
+        if re.search(r'仲介(?:手数料)?[^。\n]*(?:無料|0円)',text): mode='free'
+        elif re.search(r'仲介(?:手数料)?[^。\n]*(?:半額|0\.5(?:5)?ヶ月)',text): mode='half'
+        elif re.search(r'仲介(?:手数料)?[^。\n]*(?:満額|1\.1ヶ月|1ヶ月\s*\+?\s*(?:税|消費税))',text): mode='full'
+        if mode and isinstance(full,(int,float)) and full >= 0:
+            # If extraction supplied a discounted amount plus full original, trust original as the full fee.
+            if mode=='free': amount=0
+            elif mode=='half': amount=round(full/2)
+            else: amount=round(full)
+            broker.update({'original_amount':round(full),'discount_amount':round(full-amount),'amount':amount,'status':'known'})
+    # Force explicit day-only move-in into output and calculate current rent from extracted monthly current/next rent.
+    m=re.search(r'(?:入居(?:日)?(?:は|：|:|を)?\s*(\d{1,2})日|(\d{1,2})日\s*入居)',text)
+    if m and not _has_month(text):
+        day=int(m.group(1) or m.group(2)); base=today or date.today(); y,mo=base.year,base.month
+        try: candidate=date(y,mo,day)
+        except ValueError: candidate=None
+        if not candidate or candidate < base:
+            mo += 1
+            if mo==13: y+=1; mo=1
+            try: candidate=date(y,mo,day)
+            except ValueError: candidate=None
+        if candidate:
+            d['move_in']=f'{candidate.year}年{candidate.month}月{candidate.day}日'
+            cur=rows.get('current_rent')
+            monthly=rows.get('next_rent',{}).get('amount')
+            if cur is not None and isinstance(monthly,(int,float)):
+                import calendar
+                days=calendar.monthrange(candidate.year,candidate.month)[1]
+                charged=days-candidate.day+1
+                amount=round(monthly/days*charged)
+                cur.update({'amount':amount,'status':'known','breakdown':f'日割り{charged}日分'})
+    return d
+
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
     effective_instruction=_resolve_day_only_move_in(instruction)
     req=prompt(effective_instruction,material,property_name); last=''
