@@ -27,3 +27,10 @@ def test_count_detection():
 def test_count_mismatch_is_detectable():
     assert needs_count_warning("5件見積もり",4)
     assert not needs_count_warning("5件見積もり",5)
+
+
+def test_plain_media_upload_requires_no_estimate_action():
+    # Media uploads are handled before text intent routing; without an explicit
+    # follow-up text there is no estimate command to execute.
+    assert not should_batch_estimate("",1)
+    assert should_batch_estimate("ナミ、見積もりちょうだい",1)
