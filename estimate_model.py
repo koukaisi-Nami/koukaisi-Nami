@@ -38,7 +38,7 @@ def _customer_detail(row):
     b=(row.get('breakdown') or '').strip()
     if key=='current_rent':
         m=re.search(r'(\\d{1,2}/\\d{1,2}〜\\d{1,2}/\\d{1,2})',b)
-        return m.group(1) if m else b
+        return m.group(1) if m else ''
     if key=='brokerage':
         if row.get('amount')==0: return '無料'
         if row.get('discount_amount'):
