@@ -2,6 +2,7 @@
 AI extracts facts into JSON; deterministic model/renderers own totals and artifacts.
 """
 import json,re
+from datetime import date, timedelta
 from estimate_model import normalize_estimate, estimate_to_text
 FIXED=[('current_rent','当月前家賃'),('next_rent','次月前家賃'),('deposit','敷金'),('key_money','礼金'),('guarantee','初回保証料'),('brokerage','仲介手数料'),('insurance','火災保険'),('support','24時間サポート'),('key_exchange','鍵交換'),('admin','事務手数料')]
 def prompt(instruction,material,property_name=''):
@@ -33,7 +34,8 @@ def _extract(raw):
         return json.loads(candidate)
 def _has_month(t): return bool(re.search(r'(?:\d{4}[年/\-.])?\d{1,2}月|\d{4}[-/]\d{1,2}[-/]\d{1,2}',t or ''))
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
-    req=prompt(instruction,material,property_name); last=''
+    effective_instruction=_resolve_day_only_move_in(instruction)
+    req=prompt(effective_instruction,material,property_name); last=''
     attempts=[
         req,
         req+'\n前回はJSONとして壊れていた。説明・Markdown・絵文字・末尾文字を一切付けず、有効なJSONオブジェクトだけ返す。全項目を短くする。',
