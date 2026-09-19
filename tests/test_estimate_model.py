@@ -1,5 +1,6 @@
 import unittest
 from estimate_model import normalize_estimate, estimate_to_text
+from structured_estimate_runtime import _resolve_day_only_move_in, generate
 
 class EstimateModelTests(unittest.TestCase):
     def sample(self):
@@ -48,5 +49,15 @@ class EstimateModelTests(unittest.TestCase):
         self.assertTrue(t.startswith('【GRAN PASEO北新宿 107号室】\n\n初期費用概算\n\n'))
         self.assertIn('\n━━━━━━━━━━━━\n合計　457,500円\n━━━━━━━━━━━━',t)
         self.assertNotIn('\\n',t)
+
+    def test_day_only_move_in_runtime_smoke(self):
+        resolved=_resolve_day_only_move_in('入居日は10日', today=__import__('datetime').date(2026,9,19))
+        self.assertIn('2026年10月10日',resolved)
+
+        def fake_ai(prompt,uid,cid):
+            self.assertIn('2026年10月10日',prompt)
+            return '{"property":"X","move_in":"10日","items":[{"key":"current_rent","label":"当月前家賃","amount":10000,"breakdown":"日割り10日分","status":"known"}],"notes":[]}'
+        d=generate(fake_ai,'入居日は10日','賃料100000円','u','c','X')
+        self.assertEqual(d['items'][0]['amount'],10000)
 
 if __name__=='__main__': unittest.main()
