@@ -12,7 +12,7 @@ class EstimateRendererTests(unittest.TestCase):
         self.assertEqual(d['items'][0]['breakdown'],'日割り16日分')
         self.assertEqual(d['items'][1]['discount_amount'],136950)
         self.assertEqual(d['total'],279350)
-        self.assertEqual(_detail(d['items'][1]),'通常273,900円 → 割引136,950円')
+        self.assertEqual(_detail(d['items'][1]),'半額')
 
     def test_unknown_has_no_noisy_detail(self):
         self.assertEqual(_detail({'amount':None,'breakdown':''}),'')
