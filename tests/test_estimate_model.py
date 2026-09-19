@@ -14,14 +14,14 @@ class EstimateModelTests(unittest.TestCase):
     def test_proration_and_discount_are_preserved(self):
         t=estimate_to_text(self.sample())
         self.assertIn('日割り16日分',t)
-        self.assertIn('仲介手数料：136,950円（半額）',t)
+        self.assertIn('仲介手数料　136,950円（半額）',t)
         self.assertIn('初期費用合計：548,350円',t)
     def test_unknown_never_drops_structure(self):
         d=normalize_estimate({'property':'X','items':[{'label':'鍵交換','amount':None}]})
         self.assertEqual(len(d['items']),1)
         self.assertFalse(d['total_complete'])
         text=estimate_to_text(d)
-        self.assertIn('鍵交換：－',text)
+        self.assertIn('鍵交換　－',text)
         self.assertNotIn('要確認',text)
         self.assertNotIn('※要確認項目は合計に含まれていません',text)
 
@@ -39,7 +39,7 @@ class EstimateModelTests(unittest.TestCase):
             {'key':'admin','label':'事務手数料','amount':None},
         ]}
         t=estimate_to_text(d)
-        self.assertIn('当月前家賃：－',t)
+        self.assertIn('当月前家賃　－',t)
         self.assertNotIn('フリーレント2ヶ月',t)
         self.assertIn('24時間サポート：22,000円',t)
         self.assertIn('鍵交換：27,500円',t)
