@@ -54,10 +54,8 @@ def estimate_to_text(data):
     d=normalize_estimate(data); out=['【初期費用概算】',d['property']]
     if d['move_in']: out.append('入居日：'+d['move_in'])
     for r in d['items']:
-        amount='要確認' if r['amount'] is None else f"{r['amount']:,}円"
+        amount='－' if r['amount'] is None else f"{r['amount']:,}円"
         detail=_customer_detail(r)
         out.append(f"{r['label']}：{amount}"+(('（'+detail+'）') if detail else ''))
-    out += ['', '━━━━━━━━━━', '初期費用合計：'+('要確認' if d['total'] is None else f"{d['total']:,}円"), '━━━━━━━━━━']
-    if not d['total_complete']:
-        out.append('※要確認項目は合計に含まれていません')
+    out += ['', '━━━━━━━━━━', '初期費用合計：'+('－' if d['total'] is None else f"{d['total']:,}円"), '━━━━━━━━━━']
     return '\\n'.join(out)
