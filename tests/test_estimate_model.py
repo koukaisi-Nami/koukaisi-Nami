@@ -1,6 +1,6 @@
 import unittest
 from estimate_model import normalize_estimate, estimate_to_text
-from structured_estimate_runtime import _resolve_day_only_move_in, generate
+from structured_estimate_runtime import _resolve_day_only_move_in, _apply_instruction_overrides, generate
 
 class EstimateModelTests(unittest.TestCase):
     def sample(self):
@@ -59,5 +59,24 @@ class EstimateModelTests(unittest.TestCase):
             return '{"property":"X","move_in":"10日","items":[{"key":"current_rent","label":"当月前家賃","amount":10000,"breakdown":"日割り10日分","status":"known"}],"notes":[]}'
         d=generate(fake_ai,'入居日は10日','賃料100000円','u','c','X')
         self.assertEqual(d['items'][0]['amount'],10000)
+
+    def test_instruction_overrides(self):
+        d={'items':[
+            {'key':'current_rent','label':'当月前家賃','amount':None,'status':'unknown','breakdown':''},
+            {'key':'next_rent','label':'次月前家賃','amount':217000,'status':'known','breakdown':''},
+            {'key':'brokerage','label':'仲介手数料','amount':108350,'original_amount':216700,'discount_amount':108350,'status':'known','breakdown':''}
+        ]}
+        out=_apply_instruction_overrides(d,'仲介手数料は満額で、10日入居',today=__import__('datetime').date(2026,9,19))
+        rows={x['key']:x for x in out['items']}
+        self.assertEqual(out['move_in'],'2026年10月10日')
+        self.assertEqual(rows['current_rent']['amount'],154032)
+        self.assertEqual(rows['brokerage']['amount'],216700)
+        self.assertEqual(rows['brokerage']['discount_amount'],0)
+
+    def test_commission_half_and_free(self):
+        def data():
+            return {'items':[{'key':'brokerage','label':'仲介手数料','amount':216700,'original_amount':216700,'discount_amount':0,'status':'known','breakdown':''}]}
+        self.assertEqual(_apply_instruction_overrides(data(),'仲介手数料半額')['items'][0]['amount'],108350)
+        self.assertEqual(_apply_instruction_overrides(data(),'仲介手数料無料')['items'][0]['amount'],0)
 
 if __name__=='__main__': unittest.main()
