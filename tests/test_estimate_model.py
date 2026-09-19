@@ -42,7 +42,7 @@ class EstimateModelTests(unittest.TestCase):
         self.assertIn('当月前家賃　－',t)
         self.assertNotIn('フリーレント2ヶ月',t)
         self.assertIn('24時間サポート　22,000円',t)
-        self.assertIn('鍵交換：27,500円',t)
+        self.assertIn('鍵交換　27,500円',t)
         self.assertIn('火災保険：－',t)
         self.assertNotIn('要確認',t)
 
