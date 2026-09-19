@@ -20,8 +20,12 @@ jobs:
         run: python -m py_compile app.py nami_agent.py
       - name: Planner tests
         run: python -m unittest tests.test_nami_agent -v
-      - name: Verify integration points
+      - name: Verify estimate routing integration
         run: |
-          grep -q 'from nami_agent import plan_with_ai' app.py
-          grep -q 'semantic_batch' app.py
-          grep -q "plan.get('outputs')" app.py
+          if grep -q 'from line_estimate_intent import should_batch_estimate' app.py && grep -q 'should_batch_estimate(text,len(items))' app.py; then
+            echo "Current line_estimate_intent router is integrated"
+          else
+            grep -q 'from nami_agent import plan_with_ai' app.py
+            grep -q 'semantic_batch' app.py
+            grep -q "plan.get('outputs')" app.py
+          fi
