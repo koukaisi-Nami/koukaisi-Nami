@@ -32,11 +32,11 @@ def _extract(raw):
         candidate=re.sub(r',\\s*([}\\]])',r'\\1',candidate)
         candidate=''.join(ch if ch in '\\t\\n\\r' or ord(ch)>=32 else ' ' for ch in candidate)
         return json.loads(candidate)
-def _has_month(t): return bool(re.search(r'(?:\\d{4}[年/\\-.])?\\d{1,2}月|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}',t or ''))
+def _has_month(t): return bool(re.search(r'(?:\d{4}[年/\-.])?\d{1,2}月|\d{4}[-/]\d{1,2}[-/]\d{1,2}',t or ''))
 def _resolve_day_only_move_in(instruction, today=None):
     """Resolve an explicit day-only move-in instruction to the next calendar occurrence."""
     text=instruction or ''
-    m=re.search(r'入居(?:日)?(?:は|：|:|を)?\\s*(\\d{1,2})日(?:\\s*入居)?',text)
+    m=re.search(r'入居(?:日)?(?:は|：|:|を)?\s*(\d{1,2})日(?:\s*入居)?',text)
     if not m or _has_month(text): return text
     day=int(m.group(1))
     if day < 1 or day > 31: return text
@@ -46,7 +46,7 @@ def _resolve_day_only_move_in(instruction, today=None):
         try: candidate=date(year,month,day)
         except ValueError: candidate=None
         if candidate and candidate >= base:
-            return text+f'\\n【入居日の確定補助】ユーザー指定の「{day}日」は次回の{candidate.year}年{candidate.month}月{day}日として日割り計算する。図面の入居可能日を入居日として使わない。'
+            return text+f'\n【入居日の確定補助】ユーザー指定の「{day}日」は次回の{candidate.year}年{candidate.month}月{day}日として日割り計算する。図面の入居可能日を入居日として使わない。'
         month += 1
         if month == 13: year += 1; month = 1
     return text
