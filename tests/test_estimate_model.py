@@ -45,5 +45,8 @@ class EstimateModelTests(unittest.TestCase):
         self.assertIn('鍵交換　27,500円',t)
         self.assertIn('火災保険　－',t)
         self.assertNotIn('要確認',t)
+        self.assertTrue(t.startswith('【GRAN PASEO北新宿 107号室】\n\n初期費用概算\n\n'))
+        self.assertIn('\n━━━━━━━━━━━━\n合計　457,500円\n━━━━━━━━━━━━',t)
+        self.assertNotIn('\\n',t)
 
 if __name__=='__main__': unittest.main()
