@@ -4,8 +4,7 @@ p=Path('app.py')
 s=p.read_text()
 old='from estimate_document import make_estimate_document, make_estimate_image\n'
 new=old+'from nami_agent import plan_with_ai\n'
-assert old in s and 'from nami_agent import plan_with_ai' not in s
-s=s.replace(old,new,1)
+if 'from nami_agent import plan_with_ai' not in s:\n    assert old in s\n    s=s.replace(old,new,1)
 
 old="""        batch_answer=None
         if is_batch_estimate_command(text):
@@ -20,10 +19,7 @@ new="""        # General semantic planner: understand intent first, then reuse t
         if semantic_batch or is_batch_estimate_command(text):
             items=recent_media
 """
-assert old in s
-s=s.replace(old,new,1)
-
-old="""        batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None
+if old in s:\n    s=s.replace(old,new,1)\nelif 'plan=plan_with_ai(ai,text,uid,cid,bool(recent_media))' not in s:\n    raise AssertionError('planner integration point missing')\n\nold="""        batch_marker=batch_artifact_marker(text) if isinstance(batch_answer,list) else None
 """
 new="""        # Prefer the planner's requested output format; keep the old marker parser as fallback.
         batch_marker=None
@@ -34,6 +30,4 @@ new="""        # Prefer the planner's requested output format; keep the old mark
             elif 'image' in outs: batch_marker='__ESTIMATE_IMAGE__'
             else: batch_marker=batch_artifact_marker(text)
 """
-assert old in s
-s=s.replace(old,new,1)
-p.write_text(s)
+if old in s:\n    s=s.replace(old,new,1)\nelif "outs=set(plan.get('outputs') or [])" not in s:\n    raise AssertionError('planner output integration point missing')\np.write_text(s)
