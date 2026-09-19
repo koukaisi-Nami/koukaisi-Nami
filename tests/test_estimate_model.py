@@ -43,7 +43,7 @@ class EstimateModelTests(unittest.TestCase):
         self.assertNotIn('フリーレント2ヶ月',t)
         self.assertIn('24時間サポート　22,000円',t)
         self.assertIn('鍵交換　27,500円',t)
-        self.assertIn('火災保険：－',t)
+        self.assertIn('火災保険　－',t)
         self.assertNotIn('要確認',t)
 
 if __name__=='__main__': unittest.main()
