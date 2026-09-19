@@ -11,14 +11,8 @@ from estimate_model import normalize_estimate, _customer_detail
 FONT='HeiseiKakuGo-W5'; pdfmetrics.registerFont(UnicodeCIDFont(FONT))
 
 def _detail(row):
-    b=(row.get('breakdown') or '').strip()
-    # Keep only information that helps understand the amount. Generic status/tax text is noise.
-    if b in ('税込','要確認','仮','概算'): b=''
-    discount=row.get('discount_amount') or 0
-    if discount:
-        original=row.get('original_amount')
-        return (f"通常{original:,}円 → 割引{discount:,}円" if original is not None else f"割引{discount:,}円")
-    return b
+    # Keep image/PDF annotations identical to the canonical LINE text policy.
+    return _customer_detail(row)
 
 def make_estimate_document(payload):
     d=normalize_estimate(payload); out=BytesIO(); c=canvas.Canvas(out,pagesize=A4); w,h=A4
@@ -34,9 +28,8 @@ def make_estimate_document(payload):
     for row in d.get('items',[])[:15]:
         discounted=bool(row.get('discount_amount')); c.setStrokeColorRGB(*(red if discounted else (.55,.58,.62))); c.rect(left,yy-rowh,right-left,rowh,fill=0,stroke=1); c.line(col1,yy,col1,yy-rowh); c.line(col2,yy,col2,yy-rowh)
         c.setFillColorRGB(*(red if discounted else (0,0,0))); c.setFont(FONT,9); c.drawString(left+4*mm,yy-6.8*mm,row.get('label','')[:20]); c.setFont(FONT,7.5); c.drawString(col1+3*mm,yy-6.8*mm,_detail(row)[:30])
-        amount=row.get('amount'); value='要確認' if amount is None else f'{amount:,} 円'; c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,value); yy-=rowh
-    yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'初期費用合計'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('要確認' if d.get('total') is None else f"{d['total']:,} 円"))
-    if not d.get('total_complete',True): c.setFillColorRGB(0,0,0); c.setFont(FONT,8); c.drawString(left,yy-30*mm,'※要確認項目は合計に含まれていません')
+        amount=row.get('amount'); value='－' if amount is None else f'{amount:,} 円'; c.setFont(FONT,10); c.drawRightString(right-4*mm,yy-6.8*mm,value); yy-=rowh
+    yy-=5*mm; c.setStrokeColorRGB(*navy); c.setLineWidth(1.5); c.rect(left,yy-22*mm,right-left,22*mm,fill=0,stroke=1); c.setFillColorRGB(*navy); c.setFont(FONT,18); c.drawString(left+8*mm,yy-14*mm,'初期費用合計'); c.setFont(FONT,24); c.drawRightString(right-8*mm,yy-14*mm,('－' if d.get('total') is None else f"{d['total']:,} 円"))
     c.setFont(FONT,8); c.drawRightString(right,14*mm,'Steer Ship株式会社'); c.showPage(); c.save(); out.seek(0); return out
 
 def make_estimate_image(payload):
