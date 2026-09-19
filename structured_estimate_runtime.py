@@ -32,7 +32,24 @@ def _extract(raw):
         candidate=re.sub(r',\\s*([}\\]])',r'\\1',candidate)
         candidate=''.join(ch if ch in '\\t\\n\\r' or ord(ch)>=32 else ' ' for ch in candidate)
         return json.loads(candidate)
-def _has_month(t): return bool(re.search(r'(?:\d{4}[年/\-.])?\d{1,2}月|\d{4}[-/]\d{1,2}[-/]\d{1,2}',t or ''))
+def _has_month(t): return bool(re.search(r'(?:\\d{4}[年/\\-.])?\\d{1,2}月|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}',t or ''))
+def _resolve_day_only_move_in(instruction, today=None):
+    """Resolve an explicit day-only move-in instruction to the next calendar occurrence."""
+    text=instruction or ''
+    m=re.search(r'入居(?:日)?(?:は|：|:|を)?\\s*(\\d{1,2})日(?:\\s*入居)?',text)
+    if not m or _has_month(text): return text
+    day=int(m.group(1))
+    if day < 1 or day > 31: return text
+    base=today or date.today()
+    year,month=base.year,base.month
+    for _ in range(14):
+        try: candidate=date(year,month,day)
+        except ValueError: candidate=None
+        if candidate and candidate >= base:
+            return text+f'\\n【入居日の確定補助】ユーザー指定の「{day}日」は次回の{candidate.year}年{candidate.month}月{day}日として日割り計算する。図面の入居可能日を入居日として使わない。'
+        month += 1
+        if month == 13: year += 1; month = 1
+    return text
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
     effective_instruction=_resolve_day_only_move_in(instruction)
     req=prompt(effective_instruction,material,property_name); last=''
@@ -48,8 +65,6 @@ def generate(ai_call,instruction,material,uid,cid,property_name=''):
             for key,label in FIXED:
                 row=bykey.get(key) or {'key':key,'label':label,'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'}; row['label']=label; fixed.append(row)
             d['items']=fixed+[x for x in d['items'] if x.get('key') not in {k for k,_ in FIXED}]
-            if re.search(r'\d{1,2}日(?:入居)?',instruction or '') and not _has_month(instruction):
-                r=d['items'][0]; r.update({'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'})
             return normalize_estimate(d)
         except Exception as x:
             print("ESTIMATE_JSON_RETRY",repr(x),str(last)[:500],flush=True)
