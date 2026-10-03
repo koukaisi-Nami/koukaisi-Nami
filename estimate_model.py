@@ -50,17 +50,22 @@ def _customer_detail(row):
         return ''
     return ''
 def estimate_to_text(data):
-    """Readable LINE/customer text; image/PDF use the same visible detail policy."""
+    """Readable LINE/customer text with a visually stable amount column."""
     d=normalize_estimate(data)
     out=[f"【{d['property']}】", "", "初期費用概算", ""]
     if d['move_in']:
         out += ['入居日　'+d['move_in'], '']
+    rows=[]
     for r in d['items']:
         amount='－' if r['amount'] is None else f"{r['amount']:,}円"
         detail=_customer_detail(r)
-        if detail:
-            amount += '（'+detail+'）'
-        out.append(f"{r['label']}　{amount}")
+        if detail: amount += '（'+detail+'）'
+        rows.append((r['label'],amount))
+    # LINE uses proportional fonts, so separate label/value with a consistent divider
+    # instead of fragile runs of spaces. This keeps every amount easy to scan.
+    width=max([len(label) for label,_ in rows] or [0])
+    for label,amount in rows:
+        out.append(f"{label.ljust(width, '　')} ｜ {amount}")
     total='－' if d['total'] is None else f"{d['total']:,}円"
-    out += ['', '━━━━━━━━━━━━', f"合計　{total}", '━━━━━━━━━━━━']
+    out += ['', '━━━━━━━━━━━━', f"合計{'　' * max(1,width-2)} ｜ {total}", '━━━━━━━━━━━━']
     return '\n'.join(out)
