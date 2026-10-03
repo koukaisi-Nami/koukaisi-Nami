@@ -52,8 +52,14 @@ def _resolve_day_only_move_in(instruction, today=None):
     return text
 def _user_specified_move_in(instruction):
     t=instruction or ''
-    return bool(re.search(r'(?:入居(?:日)?(?:は|：|:|を)?\\s*)(?:\\d{4}[年/\\-.])?\\d{1,2}(?:月|[-/])\\d{1,2}日?|入居(?:日)?(?:は|：|:|を)?\\s*\\d{1,2}日',t))
-
+    patterns=[
+        r'入居(?:日)?(?:は|：|:|を)?\s*\d{1,2}月\d{1,2}日',
+        r'入居(?:日)?(?:は|：|:|を)?\s*\d{4}[/-]\d{1,2}[/-]\d{1,2}',
+        r'\d{1,2}月\d{1,2}日\s*入居',
+        r'\d{4}[/-]\d{1,2}[/-]\d{1,2}\s*入居',
+        r'入居(?:日)?(?:は|：|:|を)?\s*\d{1,2}日(?:\s*入居)?',
+    ]
+    return any(re.search(p,t) for p in patterns)
 def _enforce_user_move_in(data,instruction):
     if _user_specified_move_in(instruction): return data
     data['move_in']=''
@@ -65,11 +71,7 @@ def _enforce_user_move_in(data,instruction):
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
     effective_instruction=_resolve_day_only_move_in(instruction)
     req=prompt(effective_instruction,material,property_name); last=''
-    attempts=[
-        req,
-        req+'\n前回はJSONとして壊れていた。説明・Markdown・絵文字・末尾文字を一切付けず、有効なJSONオブジェクトだけ返す。全項目を短くする。',
-        req+'\n最終再生成。必ずJSON.parse可能なJSONだけ返す。notesとbreakdownは必要最小限。文字列内改行禁止。出力を途中で切らない。'
-    ]
+    # Keep the LINE path fast: one normal attempt plus one compact repair only.\n    attempts=[\n        req,\n        req+'\\nJSON修復再生成。有効なJSONオブジェクトだけ返す。説明・Markdown・絵文字禁止。notesとbreakdownは最小限。'\n    ]
     for attempt_req in attempts:
         last=ai_call(attempt_req,uid,cid)
         try:
