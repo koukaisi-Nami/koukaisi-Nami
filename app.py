@@ -1610,7 +1610,14 @@ def webhook():
             else:
                 groups,ambiguous=group_attachments(items)
                 batch_answer='資料の一部で物件を特定できませんでした。どの物件の資料か指定してください。' if ambiguous else batch_estimates_using_single(groups,text,uid,cid)
-                if not ambiguous: clear_estimate_batch(cid)
+                if not ambiguous:
+                    clear_estimate_batch(cid)
+                    marker=batch_artifact_marker(text)
+                    if marker:
+                        base=os.getenv('PUBLIC_BASE_URL','https://koukaisi-nami.onrender.com').rstrip('/')
+                        save_msg('assistant:'+eid,cid,'bot','航海士ナミ','assistant','複数物件の見積画像/PDFを送信')
+                        send_batch_estimate_artifacts(e.get('replyToken'),line_target(e),batch_answer,base,marker)
+                        continue
         reminder_done=complete_member_reminder(cid,text)
         reminder_timing_missing=reminder_needs_timing(text)
         member_task=parse_member_task(text) if reminder_has_enough_context(text) else None
