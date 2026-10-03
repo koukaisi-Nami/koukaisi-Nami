@@ -8,7 +8,7 @@ FIXED=[('current_rent','当月前家賃'),('next_rent','次月前家賃'),('depo
 def prompt(instruction,material,property_name=''):
     schema={"property":property_name or "物件名","move_in":"15日 or empty","items":[{"key":"current_rent","label":"当月前家賃","amount":None,"original_amount":None,"discount_amount":0,"breakdown":"","status":"known|unknown"}],"notes":[]}
     return f'''募集図面から初期費用を計算しJSONだけ返す。推測禁止。固定項目順: {FIXED}。
-最重要：図面の「その他費用」「契約時費用」「入居時費用」「備考」「特約」「諸費用」を省略せず最後まで読む。名称が違っても意味で分類する。
+最重要：初期費用だけを計上する。更新料・更新事務手数料・更新保証料・更新時費用など将来発生する費用は初期費用に含めない。\n最重要：図面の「その他費用」「契約時費用」「入居時費用」「備考」「特約」「諸費用」を省略せず最後まで読む。名称が違っても意味で分類する。
 鍵交換費/鍵交換代/鍵設定費/シリンダー交換/鍵登録費→key_exchange。24Hサポート/24時間サポート/安心サポート/緊急サポート/入居者サポート/Goodプレミアムα等の生活サポート→support。住宅総合保険/火災保険/家財保険/損保/少額短期保険→insurance。登録料/事務手数料/契約事務手数料→admin。ただし別個の費用なら固定項目後に別行で残す。
 資料記載額を最優先しfallbackで上書き禁止。税込はそのまま。税抜は消費税10%を加えた税込額をamountにする（3000円税抜→3300円）。
 管理費/共益費は前家賃に含める。最重要：当月前家賃の日割りは【今回の指示】でユーザー自身が入居日を明示した場合だけ計算する。図面の入居可能日・入居予定日・完成日・別表参照・AI推測を入居日として採用してはならない。ユーザー指定がなければmove_inは空、current_rent.amount=null。フリーレント記載がある場合、適用期間がユーザー指定入居日から一意に確定できない限りnext_rent.amount=null。次月前家賃を自動請求しない。
@@ -60,6 +60,24 @@ def _user_specified_move_in(instruction):
         r'入居(?:日)?(?:は|：|:|を)?\s*\d{1,2}日(?:\s*入居)?',
     ]
     return any(re.search(p,t) for p in patterns)
+def _material_has_free_rent(material):
+    return bool(re.search(r'(?:フリー\\s*レント|FR)\\s*(?:1|１|一)?\\s*(?:ヶ|ケ|か)?月',material or '',re.I))
+
+def _enforce_initial_cost_rules(data,instruction,material=''):
+    future_words=('更新料','更新事務','更新保証','更新時','退去時違約')
+    cleaned=[]
+    for row in data.get('items') or []:
+        label=str(row.get('label') or '')
+        if any(w in label for w in future_words):
+            continue
+        cleaned.append(row)
+    data['items']=cleaned
+    if _material_has_free_rent(material) and not _user_specified_move_in(instruction):
+        for row in data.get('items') or []:
+            if row.get('key') in ('current_rent','next_rent'):
+                row['amount']=None; row['original_amount']=None; row['discount_amount']=0; row['breakdown']=''; row['status']='unknown'
+    return data
+
 def _enforce_user_move_in(data,instruction):
     if _user_specified_move_in(instruction): return data
     data['move_in']=''
@@ -75,7 +93,7 @@ def generate(ai_call,instruction,material,uid,cid,property_name=''):
     for attempt_req in attempts:
         last=ai_call(attempt_req,uid,cid)
         try:
-            d=normalize_estimate(_extract(last)); d=_enforce_user_move_in(d,instruction); bykey={x.get('key'):x for x in d['items']}; fixed=[]
+            d=normalize_estimate(_extract(last)); d=_enforce_user_move_in(d,instruction); d=_enforce_initial_cost_rules(d,instruction,material); bykey={x.get('key'):x for x in d['items']}; fixed=[]
             for key,label in FIXED:
                 row=bykey.get(key) or {'key':key,'label':label,'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'}; row['label']=label; fixed.append(row)
             d['items']=fixed+[x for x in d['items'] if x.get('key') not in {k for k,_ in FIXED}]
