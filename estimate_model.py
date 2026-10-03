@@ -49,6 +49,16 @@ def _customer_detail(row):
         if b in ('半額','無料'): return b
         return ''
     return ''
+def _display_width(s):
+    # Japanese glyphs/full-width spaces count as 2 columns; ASCII digits count as 1.
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ('W','F') else 1 for ch in str(s))
+
+def _pad_label(label, columns=18):
+    # Pad with ideographic spaces so LINE's Japanese text keeps amount starts visually aligned.
+    width=_display_width(label)
+    return label + '　' * max(1, (columns-width+1)//2)
+
 def estimate_to_text(data):
     """Readable LINE/customer text; image/PDF use the same visible detail policy."""
     d=normalize_estimate(data)
@@ -60,7 +70,7 @@ def estimate_to_text(data):
         detail=_customer_detail(r)
         if detail:
             amount += '（'+detail+'）'
-        out.append(f"{r['label']}　{amount}")
+        out.append(f"{_pad_label(r['label'])}{amount}")
     total='－' if d['total'] is None else f"{d['total']:,}円"
-    out += ['', '━━━━━━━━━━━━', f"合計　{total}", '━━━━━━━━━━━━']
+    out += ['', '━━━━━━━━━━━━', f"{_pad_label('合計')}{total}", '━━━━━━━━━━━━']
     return '\n'.join(out)
