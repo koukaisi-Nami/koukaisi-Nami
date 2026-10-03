@@ -50,7 +50,13 @@ def _resolve_day_only_move_in(instruction, today=None):
         month += 1
         if month == 13: year += 1; month = 1
     return text
+def _user_specified_move_in(instruction):
+    """Only the user's current instruction may activate move-in/proration."""
+    text=instruction or ''
+    return bool(re.search(r'入居(?:日)?(?:は|：|:|を|が)?\\s*(?:20\\d{2}[年/\\-.])?\\d{1,2}(?:月|[-/])\\d{1,2}日?|入居(?:日)?(?:は|：|:|を|が)?\\s*\\d{1,2}日', text))
+
 def generate(ai_call,instruction,material,uid,cid,property_name=''):
+    user_move_in=_user_specified_move_in(instruction)
     effective_instruction=_resolve_day_only_move_in(instruction)
     req=prompt(effective_instruction,material,property_name); last=''
     attempts=[
@@ -61,7 +67,20 @@ def generate(ai_call,instruction,material,uid,cid,property_name=''):
     for attempt_req in attempts:
         last=ai_call(attempt_req,uid,cid)
         try:
-            d=normalize_estimate(_extract(last)); bykey={x.get('key'):x for x in d['items']}; fixed=[]
+            d=normalize_estimate(_extract(last))
+            # A listing's availability/move-in date is source data, not the customer's chosen move-in date.
+            # Never charge prorated current-month rent unless the user explicitly supplied a move-in date.
+            if not user_move_in:
+                d['move_in']=''
+                for row in d['items']:
+                    if row.get('key')=='current_rent':
+                        row['amount']=None
+                        row['original_amount']=None
+                        row['discount_amount']=0
+                        row['breakdown']=''
+                        row['status']='unknown'
+                d=normalize_estimate(d)
+            bykey={x.get('key'):x for x in d['items']}; fixed=[]
             for key,label in FIXED:
                 row=bykey.get(key) or {'key':key,'label':label,'amount':None,'original_amount':None,'discount_amount':0,'breakdown':'','status':'unknown'}; row['label']=label; fixed.append(row)
             d['items']=fixed+[x for x in d['items'] if x.get('key') not in {k for k,_ in FIXED}]
