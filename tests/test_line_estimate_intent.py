@@ -34,3 +34,12 @@ def test_plain_media_upload_requires_no_estimate_action():
     # follow-up text there is no estimate command to execute.
     assert not should_batch_estimate("",1)
     assert should_batch_estimate("ナミ、見積もりちょうだい",1)
+
+
+def test_japanese_tsu_counter_routes_batch_estimate():
+    assert should_batch_estimate("この上の二つの物件の初期費用を、それぞれ教えて",2)
+    assert should_batch_estimate("上のふたつの物件の初期費用お願い",2)
+    assert requested_count("この上の二つの物件の初期費用を、それぞれ教えて")==2
+    assert requested_count("上のふたつの物件お願い")==2
+    assert needs_count_warning("上の二つの物件の初期費用",3)
+    assert not needs_count_warning("上の二つの物件の初期費用",2)
