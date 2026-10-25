@@ -9,7 +9,7 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: chapi-estimate-format-rules
       - run: python patch_estimate_format.py
