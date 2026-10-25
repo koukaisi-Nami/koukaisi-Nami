@@ -1,0 +1,74 @@
+name: Nami Quality Gate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preserve-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Protect required Nami capabilities
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src = Path('app.py').read_text(encoding='utf-8')
+          required = {
+            'messages DB': 'CREATE TABLE IF NOT EXISTS messages',
+            'memory DB': 'CREATE TABLE IF NOT EXISTS memories',
+            'skills DB': 'CREATE TABLE IF NOT EXISTS skills',
+            'images DB': 'CREATE TABLE IF NOT EXISTS images',
+            'improvement DB': 'CREATE TABLE IF NOT EXISTS improvement_requests',
+            'group call gate': 'def called(',
+            'group silent mode': 'if grouped(e) and not called(m):',
+            'learning': 'def learn_important(',
+            'manager review': 'def manager_review(',
+            'web search': 'web_search',
+            'quoted messages': 'quotedMessageId',
+            'image analysis': 'def analyze(',
+            'estimates': '見積',
+            'invoices': '請求書',
+            'rental persona': '不動産賃貸仲介営業マン',
+            'self improvement': 'def improvement_intent(',
+            'webhook': '@app.post("/webhook")',
+            'owner guard import': 'from owner_guard import can_self_improve',
+            'owner guard use': 'can_self_improve(uid)',
+          }
+          missing = [name for name, token in required.items() if token not in src]
+          if missing:
+              raise SystemExit('BLOCKED: required features missing: ' + ', '.join(missing))
+          if len(src) < 15000:
+              raise SystemExit('BLOCKED: app.py unexpectedly small')
+          print('Core capability guard: OK')
+          PY
+      - name: Verify owner lock fails closed
+        run: |
+          python - <<'PY'
+          import os
+          os.environ.pop('NAMI_OWNER_LINE_USER_ID', None)
+          os.environ.pop('NAMI_OWNER_LINE_USER_IDS', None)
+          import owner_guard
+          assert owner_guard.can_self_improve('any-user') is False
+          os.environ['NAMI_OWNER_LINE_USER_ID'] = 'captain'
+          assert owner_guard.can_self_improve('captain') is True
+          assert owner_guard.can_self_improve('crew') is False
+          print('Owner lock: OK')
+          PY
+      - name: Run repository tests
+        run: |
+          if find . -maxdepth 3 -type f -name 'test_*.py' | grep -q .; then
+            python -m pip install -q pytest
+            pytest -q
+          else
+            echo 'No pytest suite found; static quality gate completed.'
+          fi
