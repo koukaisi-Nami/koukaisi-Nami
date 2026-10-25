@@ -1,0 +1,16 @@
+name: Test Nami education router
+on:
+  push:
+    branches: [chapi-nami-education-v2]
+  pull_request:
+    paths: [education_router.py, test_education_router.py, app.py]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest
+      - run: python -m py_compile education_router.py
+      - run: pytest -q test_education_router.py
