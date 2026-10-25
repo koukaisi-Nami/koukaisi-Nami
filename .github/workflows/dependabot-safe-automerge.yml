@@ -34,7 +34,7 @@ jobs:
         run: python -m unittest tests.test_owner_guard
       - name: Read Dependabot update metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
       - name: Merge tested patch/minor update
