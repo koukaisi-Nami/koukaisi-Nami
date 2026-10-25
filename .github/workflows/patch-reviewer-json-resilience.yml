@@ -1,0 +1,41 @@
+name: Reviewer JSON resilience CI
+
+on:
+  push:
+    branches:
+      - chapi/reviewer-json-resilience-v1
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test-reviewer-parser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile
+        run: python -m py_compile app.py nami_supervisor.py tests/test_reviewer_json_resilience.py
+      - name: Reviewer JSON regression tests
+        run: python -m unittest -v tests/test_reviewer_json_resilience.py
+      - name: Existing supervisor and owner guards
+        run: |
+          python -m unittest -v tests.test_owner_guard
+          python -m unittest -v tests.test_supervisor_review_runtime
+      - name: Safety invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('nami_supervisor.py').read_text()
+          assert 'def parse_reviewer_json' in s
+          assert 'json.loads' in s
+          assert 'REVIEW_ACTIONS' in s
+          assert 'memory_scope' in s
+          print('safety invariants passed')
+          PY

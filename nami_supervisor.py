@@ -3,6 +3,7 @@
 Pure routing helpers live here so they can be regression-tested without touching
 PostgreSQL. Persistence remains in app.py and existing memories are never reset.
 """
+import json
 import re
 
 SELF_IMPROVE_RE = re.compile(
@@ -12,6 +13,48 @@ SELF_IMPROVE_RE = re.compile(
 )
 EXPLICIT_MEMORY_RE = re.compile(r"(覚えて|記憶して|保存して|今後はこれで|このやり方を覚えて)", re.I)
 COMPANY_SCOPE_RE = re.compile(r"(全社共通|会社共通|会社全体|社内共通|全グループ共通|会社ルール|弊社ルール)", re.I)
+REVIEW_ACTIONS = {"answer", "memory", "self_improve", "ask_owner"}
+MEMORY_SCOPES = {"none", "user", "conversation", "company"}
+
+
+def parse_reviewer_json(raw):
+    """Parse and strictly validate one reviewer response.
+
+    Invalid, empty, fenced, truncated, or structurally unsafe responses return None.
+    We deliberately do not guess/repair truncated JSON because that could turn an
+    incomplete reviewer decision into an approval. The caller must retry or stop.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    action = data.get("action")
+    scope = data.get("memory_scope", "none")
+    if action not in REVIEW_ACTIONS or scope not in MEMORY_SCOPES:
+        return None
+    required = ("corrected_answer", "memory_text", "improvement_request", "reason")
+    if any(not isinstance(data.get(key, ""), str) for key in required):
+        return None
+    if action == "memory" and scope == "none":
+        return None
+    if action != "memory" and scope != "none":
+        return None
+    return {
+        "action": action,
+        "corrected_answer": data.get("corrected_answer", ""),
+        "memory_scope": scope,
+        "memory_text": data.get("memory_text", ""),
+        "improvement_request": data.get("improvement_request", ""),
+        "reason": data.get("reason", ""),
+    }
 
 
 def route_intent(text, is_owner=False):
